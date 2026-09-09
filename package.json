@@ -1,0 +1,43 @@
+{
+  "name": "intray",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@8.14.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.ts",
+    "login": "wrangler login --scopes account:read user:read workers:write workers_kv:write workers_routes:write workers_scripts:write workers_tail:read d1:write zone:read email_routing:write email_sending:write",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "db:migrate:local": "wrangler d1 migrations apply intray --local",
+    "db:migrate:remote": "wrangler d1 migrations apply intray --remote",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.22.0",
+    "hono": "4.13.7",
+    "postal-mime": "3.0.0",
+    "ulid": "3.0.2",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20260908.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.129.1"
+  }
+}

@@ -1,0 +1,389 @@
+import type { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod";
+import skillMd from "../../public/skill.md";
+import {
+  authenticate,
+  createApiKey,
+  createInbox,
+  deleteInbox,
+  deleteMessage,
+  forwardMessage,
+  getAttachment,
+  getInbox,
+  getMessage,
+  getThread,
+  listInboxes,
+  listMessages,
+  listThreads,
+  me,
+  replyToMessage,
+  searchMessages,
+  sendMessage,
+  signup,
+  updateMessageLabels,
+  verify,
+  waitForMessage,
+} from "../core/index";
+import type { Principal } from "../core/principal";
+import { config, type Env } from "../env";
+import { unauthorized } from "../lib/errors";
+import { run } from "./result";
+
+const TEXT_BODY_MAX_BYTES = 64 * 1024;
+
+const inboxId = z.string().min(1);
+
+const messageId = z.string().min(1);
+
+const recipients = z.union([z.string(), z.array(z.string())]);
+
+const attachments = z.array(
+  z.object({
+    filename: z.string(),
+    content_type: z.string(),
+    content: z.string(),
+  }),
+);
+
+const pageArgs = {
+  limit: z.number().optional(),
+  page_token: z.string().optional(),
+};
+
+async function attachmentDetail(
+  env: Env,
+  principal: Principal,
+  args: { inbox_id: string; message_id: string; attachment_id: string },
+): Promise<Record<string, unknown>> {
+  const download = await getAttachment(
+    env,
+    principal,
+    args.inbox_id,
+    args.message_id,
+    args.attachment_id,
+  );
+  const { attachment } = download;
+  const readable =
+    (attachment.content_type ?? "").startsWith("text/") && attachment.size <= TEXT_BODY_MAX_BYTES;
+  const text = readable ? await new Response(download.body).text() : null;
+  if (!readable) {
+    await download.body.cancel();
+  }
+  const base = `${config(env).publicUrl}/v1/inboxes/${encodeURIComponent(args.inbox_id)}`;
+  return {
+    ...attachment,
+    download_url: `${base}/messages/${args.message_id}/attachments/${args.attachment_id}`,
+    ...(text === null ? {} : { text }),
+  };
+}
+
+function registerOnboardingTools(server: McpServer, env: Env): void {
+  server.registerTool(
+    "signup",
+    {
+      title: "Sign up",
+      description:
+        "Create an account for a human's email address. Returns an api_key, an inbox_id, and mails a 6-digit code to that address. For an address that already has an account the returned key is pending (key_pending true) and does nothing until verify succeeds; keys already in use keep working until then.",
+      inputSchema: z.object({
+        email: z.string(),
+        username: z.string().optional(),
+      }),
+    },
+    (args) => run(() => signup(env, { email: args.email, username: args.username }, {})),
+  );
+
+  server.registerTool(
+    "verify",
+    {
+      title: "Verify",
+      description:
+        "Confirm the 6-digit code emailed by signup. Takes the api_key signup returned. A key from a repeat signup stays pending until this succeeds, and activating it revokes every other key on the account. Until the account is verified it can only email its own signup address.",
+      inputSchema: z.object({
+        api_key: z.string(),
+        code: z.string(),
+      }),
+    },
+    (args) =>
+      run(async () => {
+        const principal = await authenticate(env, args.api_key, { allowPending: true });
+        if (principal === null) {
+          throw unauthorized("api_key is not a live key");
+        }
+        return verify(env, principal, { code: args.code });
+      }),
+  );
+
+  server.registerTool(
+    "read_onboarding_docs",
+    {
+      title: "Read onboarding docs",
+      description: "Return the full onboarding and usage instructions as markdown.",
+      inputSchema: z.object({}),
+    },
+    () => run(async () => ({ markdown: skillMd })),
+  );
+}
+
+function registerAccountTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "auth_me",
+    {
+      title: "Account",
+      description: "Return the account, its inbox count, and the key id this request used.",
+      inputSchema: z.object({}),
+    },
+    () => run(() => me(env, principal)),
+  );
+
+  server.registerTool(
+    "create_api_key",
+    {
+      title: "Create API key",
+      description: "Mint another API key. The full key is returned only here.",
+      inputSchema: z.object({ name: z.string().optional() }),
+    },
+    (args) => run(() => createApiKey(env, principal, { name: args.name })),
+  );
+}
+
+function registerInboxTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "list_inboxes",
+    {
+      title: "List inboxes",
+      description: "List this account's inboxes, newest first.",
+      inputSchema: z.object(pageArgs),
+    },
+    (args) => run(() => listInboxes(env, principal, args)),
+  );
+
+  server.registerTool(
+    "create_inbox",
+    {
+      title: "Create inbox",
+      description:
+        "Create an inbox. username defaults to a generated one, domain to the first served domain." +
+        " display_name becomes the From name on mail this inbox sends, so set it to a name a human" +
+        " recipient would recognize; a bare address alone reads as less trustworthy.",
+      inputSchema: z.object({
+        username: z.string().optional(),
+        domain: z.string().optional(),
+        display_name: z.string().optional(),
+      }),
+    },
+    (args) => run(() => createInbox(env, principal, args)),
+  );
+
+  server.registerTool(
+    "get_inbox",
+    {
+      title: "Get inbox",
+      description: "Fetch one inbox by its full address.",
+      inputSchema: z.object({ inbox_id: inboxId }),
+    },
+    (args) => run(() => getInbox(env, principal, args.inbox_id)),
+  );
+
+  server.registerTool(
+    "delete_inbox",
+    {
+      title: "Delete inbox",
+      description: "Delete an inbox with every thread, message, and stored object under it.",
+      inputSchema: z.object({ inbox_id: inboxId }),
+    },
+    (args) => run(() => deleteInbox(env, principal, args.inbox_id)),
+  );
+}
+
+function registerThreadTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "list_threads",
+    {
+      title: "List threads",
+      description: "List an inbox's threads by last_message_at descending.",
+      inputSchema: z.object({ inbox_id: inboxId, ...pageArgs }),
+    },
+    (args) => run(() => listThreads(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "get_thread",
+    {
+      title: "Get thread",
+      description: "Fetch one thread with its messages ordered by created_at.",
+      inputSchema: z.object({ inbox_id: inboxId, thread_id: z.string().min(1) }),
+    },
+    (args) => run(() => getThread(env, principal, args.inbox_id, args.thread_id)),
+  );
+}
+
+function registerMessageTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "list_messages",
+    {
+      title: "List messages",
+      description:
+        "List an inbox's messages, newest first. labels matches messages carrying all of them; since and before bound created_at in Unix milliseconds.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        labels: z.union([z.string(), z.array(z.string())]).optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        subject: z.string().optional(),
+        since: z.number().optional(),
+        before: z.number().optional(),
+        ...pageArgs,
+      }),
+    },
+    (args) => run(() => listMessages(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "search_messages",
+    {
+      title: "Search messages",
+      description: "Search an inbox's messages by subject, body, and addresses.",
+      inputSchema: z.object({ inbox_id: inboxId, q: z.string(), ...pageArgs }),
+    },
+    (args) => run(() => searchMessages(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "get_message",
+    {
+      title: "Get message",
+      description: "Fetch one message with its attachment metadata.",
+      inputSchema: z.object({ inbox_id: inboxId, message_id: messageId }),
+    },
+    (args) => run(() => getMessage(env, principal, args.inbox_id, args.message_id)),
+  );
+
+  server.registerTool(
+    "wait_for_message",
+    {
+      title: "Wait for message",
+      description:
+        "Block until a message with created_at greater than since arrives, or until timeout seconds elapse. since defaults to now, timeout to 30 and caps at 55. Returns an empty items array on timeout.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        since: z.number().optional(),
+        timeout: z.number().optional(),
+      }),
+    },
+    (args) => run(() => waitForMessage(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "update_message_labels",
+    {
+      title: "Update message labels",
+      description: "Replace a message's labels with the given set.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        message_id: messageId,
+        labels: z.array(z.string()),
+      }),
+    },
+    (args) =>
+      run(() =>
+        updateMessageLabels(env, principal, args.inbox_id, args.message_id, {
+          labels: args.labels,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "delete_message",
+    {
+      title: "Delete message",
+      description: "Delete a message and its stored objects.",
+      inputSchema: z.object({ inbox_id: inboxId, message_id: messageId }),
+    },
+    (args) => run(() => deleteMessage(env, principal, args.inbox_id, args.message_id)),
+  );
+
+  server.registerTool(
+    "get_attachment",
+    {
+      title: "Get attachment",
+      description:
+        "Return an attachment's metadata and a download_url, plus its decoded text when the content type is text/* and it is at most 64 KiB.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        message_id: messageId,
+        attachment_id: z.string().min(1),
+      }),
+    },
+    (args) => run(() => attachmentDetail(env, principal, args)),
+  );
+}
+
+function registerSendingTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "send_message",
+    {
+      title: "Send message",
+      description:
+        "Send a new message from an inbox. to, cc, and bcc take a string or an array; at most 50 recipients and 32 attachments, and the whole message must stay under 5 MiB.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        to: recipients,
+        cc: recipients.optional(),
+        bcc: recipients.optional(),
+        subject: z.string(),
+        text: z.string().optional(),
+        html: z.string().optional(),
+        reply_to: z.string().optional(),
+        attachments: attachments.optional(),
+      }),
+    },
+    (args) => run(() => sendMessage(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "reply_to_message",
+    {
+      title: "Reply to message",
+      description:
+        "Reply in the parent's thread. reply_all merges the parent's from, to, and cc minus the inbox's own address.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        message_id: messageId,
+        text: z.string().optional(),
+        html: z.string().optional(),
+        reply_all: z.boolean().optional(),
+        attachments: attachments.optional(),
+      }),
+    },
+    (args) => run(() => replyToMessage(env, principal, args.inbox_id, args.message_id, args)),
+  );
+
+  server.registerTool(
+    "forward_message",
+    {
+      title: "Forward message",
+      description: "Forward a message with its attachments and the original quoted below text.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        message_id: messageId,
+        to: recipients,
+        cc: recipients.optional(),
+        bcc: recipients.optional(),
+        text: z.string().optional(),
+      }),
+    },
+    (args) => run(() => forwardMessage(env, principal, args.inbox_id, args.message_id, args)),
+  );
+}
+
+export function registerTools(server: McpServer, env: Env, principal: Principal | null): void {
+  if (principal === null) {
+    registerOnboardingTools(server, env);
+    return;
+  }
+  registerAccountTools(server, env, principal);
+  registerInboxTools(server, env, principal);
+  registerThreadTools(server, env, principal);
+  registerMessageTools(server, env, principal);
+  registerSendingTools(server, env, principal);
+}

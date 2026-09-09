@@ -1,0 +1,28 @@
+From: Carol Example <carol@example.com>
+To: agent@intray.example
+Subject: Report and pixel
+Message-ID: <html-001@example.com>
+Date: Tue, 08 Sep 2026 13:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer-boundary"
+
+--outer-boundary
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Hello    rich   world</p></body></html>
+
+--outer-boundary
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: attachment; filename="note.txt"
+
+attached note body
+
+--outer-boundary
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="pixel.png"
+Content-ID: <pixel-001@example.com>
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+
+--outer-boundary--

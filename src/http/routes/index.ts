@@ -1,0 +1,17 @@
+import { Hono } from "hono";
+import type { AppEnv } from "../types";
+import { agentRoutes } from "./agent";
+import { attachmentRoutes } from "./attachments";
+import { inboxRoutes } from "./inboxes";
+import { keyRoutes } from "./keys";
+import { messageRoutes } from "./messages";
+import { threadRoutes } from "./threads";
+
+export const routes = new Hono<AppEnv>();
+
+routes.route("/", agentRoutes);
+routes.route("/", keyRoutes);
+routes.route("/", inboxRoutes);
+routes.route("/", threadRoutes);
+routes.route("/", messageRoutes);
+routes.route("/", attachmentRoutes);

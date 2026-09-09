@@ -1,0 +1,8 @@
+From: anon@example.com
+To: agent@intray.example
+Subject: No identifier
+Date: Tue, 08 Sep 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+A message without a Message-ID header.

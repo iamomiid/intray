@@ -1,0 +1,69 @@
+import { readWranglerConfig } from "../config.ts";
+import type { Outcome, SetupContext, Step } from "../context.ts";
+import { defineStep, done, saveConfig, skipped } from "../context.ts";
+import { SetupError } from "../errors.ts";
+import { parseBucketNames, parseD1Databases, parseDatabaseId } from "../parse.ts";
+import { indent } from "../runtime.ts";
+import { wrangler } from "../wrangler.ts";
+
+export const DATABASE = "intray";
+
+export const BUCKET = "intray";
+
+async function runD1(context: SetupContext, step: string): Promise<Outcome> {
+  const list = wrangler(step, ["d1", "list", "--json"], context.root, { allowFailure: true });
+  const existing =
+    list.status === 0
+      ? parseD1Databases(list.output).find((database) => database.name === DATABASE)
+      : undefined;
+
+  let databaseId = existing?.uuid ?? "";
+  let created = false;
+  if (databaseId === "") {
+    const create = wrangler(step, ["d1", "create", DATABASE], context.root);
+    const parsed = parseDatabaseId(create.output);
+    if (parsed === null) {
+      throw new SetupError(
+        step,
+        `created the database but found no uuid in the output\n${indent(create.output.trim())}`,
+      );
+    }
+    databaseId = parsed;
+    created = true;
+  }
+
+  const config = readWranglerConfig(context.configPath);
+  const binding = config.d1_databases?.[0];
+  if (binding === undefined) {
+    throw new SetupError(step, "wrangler.jsonc has no d1_databases entry");
+  }
+  if (binding.database_id === databaseId) {
+    return skipped(`database_id already ${databaseId}`);
+  }
+  binding.database_id = databaseId;
+  saveConfig(context, config);
+  return done(created ? `created ${databaseId}` : `wrote database_id ${databaseId}`);
+}
+
+async function runR2(context: SetupContext, step: string): Promise<Outcome> {
+  const list = wrangler(step, ["r2", "bucket", "list"], context.root);
+  if (parseBucketNames(list.output).includes(BUCKET)) {
+    return skipped(`bucket ${BUCKET} exists`);
+  }
+  wrangler(step, ["r2", "bucket", "create", BUCKET], context.root);
+  return done(`created bucket ${BUCKET}`);
+}
+
+async function runMigrations(context: SetupContext, step: string): Promise<Outcome> {
+  const result = wrangler(step, ["d1", "migrations", "apply", DATABASE, "--remote"], context.root);
+  if (/No migrations to apply/i.test(result.output)) {
+    return skipped("no migrations to apply");
+  }
+  return done("applied");
+}
+
+export const resourceSteps: Step[] = [
+  defineStep("D1 database", runD1),
+  defineStep("R2 bucket", runR2),
+  defineStep("Migrations", runMigrations),
+];

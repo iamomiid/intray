@@ -1,0 +1,11 @@
+From: Alice Example <alice@example.com>
+To: agent@intray.example
+Subject: Quarterly status
+Message-ID: <plain-001@example.com>
+Date: Tue, 08 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hello   agent,
+
+the   status is green.

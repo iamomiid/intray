@@ -1,0 +1,511 @@
+import {
+  insertAttachment,
+  listAttachments as listAttachmentRows,
+  listAttachmentsForMessages,
+} from "../db/attachments";
+import {
+  deleteMessage as deleteMessageRow,
+  getMessage as getMessageRow,
+  insertMessage,
+  listMessages as listMessageRows,
+  listMessagesByThread,
+  listMessagesSince,
+  searchMessages as searchMessageRows,
+  updateMessageLabels as updateMessageLabelsRow,
+} from "../db/messages";
+import type { AttachmentRow, InboxRow, MessageRow, ThreadRow } from "../db/rows";
+import {
+  deleteThread,
+  getThread as getThreadRow,
+  insertThread,
+  recountThread,
+  touchThread,
+} from "../db/threads";
+import {
+  type BuiltMessage,
+  buildForward,
+  buildReply,
+  buildSend,
+  type ForwardInput,
+  type OutboundAttachment,
+  type ReplyInput,
+  send,
+} from "../email/outbound";
+import { derivePreview } from "../email/parse";
+import type { Env } from "../env";
+import { AppError, badRequest, notFound } from "../lib/errors";
+import { newId } from "../lib/ids";
+import { WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS, WAIT_POLL_MS } from "../lib/limits";
+import { clampLimit, decodeCursor, type Page, page } from "../lib/pagination";
+import { now } from "../lib/time";
+import { requireInbox } from "./inboxes";
+import { isVerified, type Principal } from "./principal";
+import { type MessageObject, parseStringArray, toMessage } from "./serialize";
+import { groupAttachments } from "./threads";
+
+const MAX_LABELS = 20;
+
+const MAX_LABEL_CHARS = 64;
+
+const WAIT_BATCH = 100;
+
+const OUTBOUND_LABELS = ["sent"];
+
+export interface ListMessagesQuery {
+  labels?: string | string[];
+  from?: string;
+  to?: string;
+  subject?: string;
+  since?: number | string;
+  before?: number | string;
+  limit?: number | string;
+  page_token?: string;
+}
+
+export interface SearchMessagesQuery {
+  q?: string;
+  limit?: number | string;
+  page_token?: string;
+}
+
+export interface WaitQuery {
+  since?: number | string;
+  timeout?: number | string;
+}
+
+export interface WaitOptions {
+  pollMs?: number;
+}
+
+export interface RawMessage {
+  body: ReadableStream;
+  size: number;
+}
+
+export interface UpdateLabelsBody {
+  labels?: unknown;
+}
+
+export interface SendMessageBody {
+  to?: string | string[];
+  cc?: string | string[];
+  bcc?: string | string[];
+  subject?: string;
+  text?: string;
+  html?: string;
+  reply_to?: string;
+  headers?: Record<string, string>;
+  attachments?: OutboundAttachment[];
+}
+
+export interface DeletedMessage {
+  deleted: true;
+}
+
+function optionalTimestamp(value: number | string | undefined, field: string): number | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw badRequest(`invalid ${field}`);
+  }
+  return parsed;
+}
+
+function normalizeFilterLabels(value: string | string[] | undefined): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  const raw = Array.isArray(value) ? value : value.split(",");
+  const labels: string[] = [];
+  for (const entry of raw) {
+    const trimmed = String(entry).trim();
+    if (trimmed.length > 0 && !labels.includes(trimmed)) {
+      labels.push(trimmed);
+    }
+  }
+  return labels;
+}
+
+function normalizeLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw badRequest("labels must be an array of strings");
+  }
+  const labels: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      throw badRequest("labels must be an array of strings");
+    }
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) {
+      throw badRequest("labels must not be empty");
+    }
+    if (trimmed.length > MAX_LABEL_CHARS) {
+      throw badRequest(`labels must be at most ${MAX_LABEL_CHARS} characters`);
+    }
+    if (!labels.includes(trimmed)) {
+      labels.push(trimmed);
+    }
+  }
+  if (labels.length > MAX_LABELS) {
+    throw badRequest(`at most ${MAX_LABELS} labels`);
+  }
+  return labels;
+}
+
+function clampTimeout(value: number | string | undefined): number {
+  if (value === undefined || value === null || value === "") {
+    return WAIT_DEFAULT_SECONDS;
+  }
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw badRequest("invalid timeout");
+  }
+  return Math.min(Math.max(Math.floor(parsed), 1), WAIT_MAX_SECONDS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function attachRows(env: Env, rows: MessageRow[]): Promise<MessageObject[]> {
+  const attachments = await listAttachmentsForMessages(
+    env.DB,
+    rows.map((row) => row.message_id),
+  );
+  const grouped = groupAttachments(attachments);
+  return rows.map((row) => toMessage(row, grouped.get(row.message_id) ?? []));
+}
+
+async function deleteObjects(env: Env, keys: string[]): Promise<void> {
+  if (keys.length === 0) {
+    return;
+  }
+  await env.BUCKET.delete(keys);
+}
+
+async function requireMessage(env: Env, inbox: InboxRow, messageId: string): Promise<MessageRow> {
+  const row = await getMessageRow(env.DB, inbox.inbox_id, messageId);
+  if (row === null) {
+    throw notFound("message not found");
+  }
+  return row;
+}
+
+export async function listMessages(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  query: ListMessagesQuery,
+): Promise<Page<MessageObject>> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const limit = clampLimit(query.limit);
+  const cursor = query.page_token === undefined ? null : decodeCursor(query.page_token);
+  const rows = await listMessageRows(
+    env.DB,
+    inbox.inbox_id,
+    {
+      labels: normalizeFilterLabels(query.labels),
+      from: query.from,
+      to: query.to,
+      subject: query.subject,
+      since: optionalTimestamp(query.since, "since"),
+      before: optionalTimestamp(query.before, "before"),
+    },
+    { limit, cursor },
+  );
+  const paged = page(rows, limit, (row) => ({ at: row.created_at, id: row.message_id }));
+  return {
+    items: await attachRows(env, paged.items),
+    next_page_token: paged.next_page_token,
+  };
+}
+
+export async function searchMessages(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  query: SearchMessagesQuery,
+): Promise<Page<MessageObject>> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const q = (query.q ?? "").trim();
+  if (q.length === 0) {
+    throw badRequest("q is required");
+  }
+  const limit = clampLimit(query.limit);
+  const cursor = query.page_token === undefined ? null : decodeCursor(query.page_token);
+  const rows = await searchMessageRows(env.DB, inbox.inbox_id, q, { limit, cursor });
+  const paged = page(rows, limit, (row) => ({ at: row.created_at, id: row.message_id }));
+  return {
+    items: await attachRows(env, paged.items),
+    next_page_token: paged.next_page_token,
+  };
+}
+
+export async function waitForMessage(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  query: WaitQuery,
+  options: WaitOptions = {},
+): Promise<Page<MessageObject>> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const since = optionalTimestamp(query.since, "since") ?? now();
+  const timeout = clampTimeout(query.timeout);
+  const pollMs = options.pollMs === undefined ? WAIT_POLL_MS : Math.max(1, options.pollMs);
+  const deadline = now() + timeout * 1000;
+
+  for (;;) {
+    const rows = await listMessagesSince(env.DB, inbox.inbox_id, since, WAIT_BATCH);
+    if (rows.length > 0) {
+      return { items: await attachRows(env, rows), next_page_token: null };
+    }
+    const remaining = deadline - now();
+    if (remaining <= 0) {
+      return { items: [], next_page_token: null };
+    }
+    await sleep(Math.min(pollMs, remaining));
+  }
+}
+
+export async function getMessage(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  messageId: string,
+): Promise<MessageObject> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const row = await requireMessage(env, inbox, messageId);
+  const attachments = await listAttachmentRows(env.DB, row.message_id);
+  return toMessage(row, attachments);
+}
+
+export async function getRawMessage(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  messageId: string,
+): Promise<RawMessage> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const row = await requireMessage(env, inbox, messageId);
+  if (row.raw_key === null) {
+    throw notFound("raw message not found");
+  }
+  const object = await env.BUCKET.get(row.raw_key);
+  if (object === null) {
+    throw notFound("raw message not found");
+  }
+  return { body: object.body, size: object.size };
+}
+
+export async function updateMessageLabels(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  messageId: string,
+  body: UpdateLabelsBody,
+): Promise<MessageObject> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const labels = normalizeLabels(body.labels);
+  const row = await updateMessageLabelsRow(
+    env.DB,
+    inbox.inbox_id,
+    messageId,
+    JSON.stringify(labels),
+  );
+  if (row === null) {
+    throw notFound("message not found");
+  }
+  const attachments = await listAttachmentRows(env.DB, row.message_id);
+  return toMessage(row, attachments);
+}
+
+export async function deleteMessage(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  messageId: string,
+): Promise<DeletedMessage> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const row = await requireMessage(env, inbox, messageId);
+  const removed = await deleteMessageRow(env.DB, inbox.inbox_id, messageId);
+  if (removed === null) {
+    throw notFound("message not found");
+  }
+  await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys]);
+
+  const remaining = await listMessagesByThread(env.DB, row.thread_id);
+  if (remaining.length === 0) {
+    const emptied = await deleteThread(env.DB, inbox.inbox_id, row.thread_id);
+    if (emptied !== null) {
+      await deleteObjects(env, [...emptied.rawKeys, ...emptied.attachmentKeys]);
+    }
+    return { deleted: true };
+  }
+  await recountThread(env.DB, row.thread_id);
+  return { deleted: true };
+}
+
+function mergeParticipants(existing: string[], added: string[]): string[] {
+  const participants: string[] = [];
+  for (const entry of [...existing, ...added]) {
+    const normalized = entry.trim().toLowerCase();
+    if (normalized.length > 0 && !participants.includes(normalized)) {
+      participants.push(normalized);
+    }
+  }
+  return participants;
+}
+
+function mailboxes(addresses: string[]): string {
+  return JSON.stringify(addresses.map((address) => ({ address, name: null })));
+}
+
+function assertRecipientsAllowed(principal: Principal, built: BuiltMessage): void {
+  if (isVerified(principal)) {
+    return;
+  }
+  const own = principal.account.email.trim().toLowerCase();
+  for (const recipient of built.recipients) {
+    if (recipient.toLowerCase() !== own) {
+      throw new AppError(403, "message_rejected", "verify your account to email other addresses");
+    }
+  }
+}
+
+async function persistOutbound(
+  env: Env,
+  inbox: InboxRow,
+  built: BuiltMessage,
+  rfcMessageId: string | null,
+  existingThread: ThreadRow | null,
+): Promise<MessageObject> {
+  const messageId = newId("msg");
+  const createdAt = now();
+  const threadId = existingThread === null ? newId("thr") : existingThread.thread_id;
+  const participants = mergeParticipants(
+    existingThread === null ? [] : parseStringArray(existingThread.participants_json),
+    [inbox.inbox_id, ...built.recipients],
+  );
+  const participantsJson = JSON.stringify(participants);
+
+  if (existingThread === null) {
+    await insertThread(env.DB, {
+      threadId,
+      inboxId: inbox.inbox_id,
+      subject: built.subject,
+      lastMessageAt: createdAt,
+      participantsJson,
+    });
+  }
+
+  const row = await insertMessage(env.DB, {
+    messageId,
+    inboxId: inbox.inbox_id,
+    threadId,
+    direction: "outbound",
+    rfcMessageId,
+    inReplyTo: built.inReplyTo,
+    referencesJson: JSON.stringify(built.references),
+    fromAddr: inbox.inbox_id,
+    fromName: inbox.display_name,
+    toJson: mailboxes(built.to),
+    ccJson: mailboxes(built.cc),
+    bccJson: mailboxes(built.bcc),
+    replyTo: built.replyTo,
+    subject: built.subject,
+    text: built.text,
+    html: built.html,
+    preview: derivePreview(built.text, built.html),
+    labelsJson: JSON.stringify(OUTBOUND_LABELS),
+    size: built.size,
+    hasAttachments: built.attachments.length > 0 ? 1 : 0,
+    rawKey: null,
+    createdAt,
+  });
+
+  const attachments: AttachmentRow[] = [];
+  for (const [index, attachment] of built.attachments.entries()) {
+    const key = `att/${messageId}/${index}`;
+    await env.BUCKET.put(key, attachment.content, {
+      httpMetadata: { contentType: attachment.contentType },
+    });
+    attachments.push(
+      await insertAttachment(env.DB, {
+        attachmentId: newId("att"),
+        messageId,
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        size: attachment.content.byteLength,
+        r2Key: key,
+        inline: 0,
+        contentId: null,
+      }),
+    );
+  }
+
+  await touchThread(env.DB, threadId, {
+    lastMessageAt: createdAt,
+    participantsJson,
+    subject: built.subject,
+  });
+
+  return toMessage(row, attachments);
+}
+
+export async function sendMessage(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  body: SendMessageBody,
+): Promise<MessageObject> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const built = buildSend({
+    from: { name: inbox.display_name, email: inbox.inbox_id },
+    to: body.to,
+    cc: body.cc,
+    bcc: body.bcc,
+    subject: body.subject,
+    text: body.text,
+    html: body.html,
+    replyTo: body.reply_to,
+    headers: body.headers,
+    attachments: body.attachments,
+  });
+  assertRecipientsAllowed(principal, built);
+  const rfcMessageId = await send(env, built.builder);
+  return persistOutbound(env, inbox, built, rfcMessageId, null);
+}
+
+export async function replyToMessage(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  messageId: string,
+  body: ReplyInput,
+): Promise<MessageObject> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const parent = await requireMessage(env, inbox, messageId);
+  const built = buildReply(parent, inbox, body);
+  assertRecipientsAllowed(principal, built);
+  const thread = await getThreadRow(env.DB, inbox.inbox_id, parent.thread_id);
+  const rfcMessageId = await send(env, built.builder);
+  return persistOutbound(env, inbox, built, rfcMessageId, thread);
+}
+
+export async function forwardMessage(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  messageId: string,
+  body: ForwardInput,
+): Promise<MessageObject> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const parent = await requireMessage(env, inbox, messageId);
+  const parentAttachments = await listAttachmentRows(env.DB, parent.message_id);
+  const built = await buildForward(env, parent, parentAttachments, inbox, body);
+  assertRecipientsAllowed(principal, built);
+  const rfcMessageId = await send(env, built.builder);
+  return persistOutbound(env, inbox, built, rfcMessageId, null);
+}
