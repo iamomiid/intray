@@ -18,13 +18,14 @@ What is built, and what a contributor needs to know before touching it. Design r
 | outbound | done | recipient normalization, send/reply/forward builders, limit checks, send-error mapping |
 | core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
-| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 33 with one |
+| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 34 with one |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
 | batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
 | message search | done | `searchMessages` runs against the `messages_fts` FTS5 table, ranked by `bm25` with the subject weighted above the body; the `from`/`to`/`subject` filters on `list_messages` stay `LIKE` scans and are fine at v1 volumes |
 | drafts | done | `src/core/drafts.ts`, `migrations/0004_drafts.sql`; create, list, get, update, delete, send now, and a one-minute cron trigger draining due scheduled drafts through `sendMessage` and `replyToMessage` |
 | webhooks | done | `src/core/webhooks.ts`; per-account https endpoints for `message.received` and `message.sent`, HMAC-SHA256 signed, delivered and retried through the `intray-webhooks` queue |
+| usage | done | `src/core/usage.ts`, `src/db/usage.ts`, `migrations/0007_usage.sql`; upsert counters for messages sent, messages received and stored bytes, read through `GET /v1/usage` or `get_usage`, enforced as `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time. Text is extracted from PDF and docx on ingest into `attachments.text`, read through `GET .../attachments/:attachment_id/text` or `get_attachment`; `text_status` rides on every attachment object |
 
 ## Limitations
@@ -34,6 +35,12 @@ What is built, and what a contributor needs to know before touching it. Design r
   reachable with it.
 - Webhook delivery is at-least-once and unordered, and a delivery still failing after 5 retries is
   dropped with no record. There is no delivery log and no way to replay one.
+- Storage is counted from `0007_usage.sql` forward. Messages and attachments stored before the
+  migration are not in `storage_bytes` and are not backfilled, so an existing deployment reads low
+  until a backfill sums `messages.size` and `attachments.size` per account into the `all` row.
+  Deleting a pre-migration message decrements nothing below zero, because the counter is clamped.
+- Usage is per account. There is no per-org rollup, because there are no orgs yet; once there are,
+  a rollup is a `GROUP BY` over the member accounts' rows for a period.
 - Nothing expires R2 raw MIME objects. They are removed only by the explicit inbox, thread and
   message delete paths, so a busy deployment grows without bound.
 - Threading has no subject-based fallback. A reply from a client that drops both `In-Reply-To` and
@@ -78,8 +85,8 @@ What is built, and what a contributor needs to know before touching it. Design r
 - The pool does not roll D1 back between tests in a file, so writes leak from one test to the next.
   `test/support.ts` exports `resetDatabase(db)`; call it in `beforeEach` of any suite that writes.
   It does not clean up R2 objects.
-- `vitest.config.ts` pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS` and
-  `OPERATOR_TOKEN` in the miniflare bindings, so changing the deployment vars in `wrangler.jsonc`
+- `vitest.config.ts` pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`, the
+  three `QUOTA_*` vars and `OPERATOR_TOKEN` in the miniflare bindings, so changing the deployment vars in `wrangler.jsonc`
   cannot move the suite. HTTP and MCP suites must use the operator-token constant from
   `test/support.ts`, because `SELF.fetch` takes no per-request env override.
 - The vitest pool exports no `fetchMock`, so the suites that assert on an outbound HTTP request

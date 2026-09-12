@@ -7,6 +7,7 @@ import {
   listInboxes as listInboxRows,
 } from "../db/inboxes";
 import type { InboxRow } from "../db/rows";
+import { storageForInbox } from "../db/usage";
 import { config, type Env } from "../env";
 import {
   isReservedUsername,
@@ -20,6 +21,7 @@ import { now } from "../lib/time";
 import { deleteObjects } from "./objects";
 import type { Principal } from "./principal";
 import { type InboxObject, toInbox } from "./serialize";
+import { recordStorageDelta } from "./usage";
 
 export interface CreateInboxInput {
   username?: string | null;
@@ -132,10 +134,12 @@ export async function deleteInbox(
   inboxId: string,
 ): Promise<DeletedInbox> {
   const inbox = await requireInbox(env, principal, inboxId);
+  const released = await storageForInbox(env.DB, inbox.inbox_id);
   const removed = await deleteInboxRow(env.DB, principal.account.id, inbox.inbox_id);
   if (removed === null) {
     throw notFound("inbox not found");
   }
+  await recordStorageDelta(env.DB, principal.account.id, -released);
   await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys, ...removed.draftKeys]);
   return { deleted: true };
 }

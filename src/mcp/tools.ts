@@ -20,6 +20,7 @@ import {
   getInbox,
   getMessage,
   getThread,
+  getUsage,
   getWebhook,
   listDrafts,
   listInboxes,
@@ -169,6 +170,20 @@ function registerAccountTools(server: McpServer, env: Env, principal: Principal)
       inputSchema: z.object({ name: z.string().optional() }),
     },
     (args) => run(() => createApiKey(env, principal, { name: args.name })),
+  );
+
+  server.registerTool(
+    "get_usage",
+    {
+      title: "Get usage",
+      description:
+        "Return this account's usage for the current UTC month: messages sent, messages received," +
+        " storage bytes held, inboxes held, and the quota for each. A null limit is unlimited." +
+        " Sending past the sent quota is quota_exceeded; mail arriving past the received or" +
+        " storage quota is rejected at the SMTP transaction and never reaches an inbox.",
+      inputSchema: z.object({}),
+    },
+    () => run(() => getUsage(env, principal)),
   );
 }
 

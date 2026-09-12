@@ -112,11 +112,6 @@ the same API-key records.
 
 Score inbound mail and label or reject accordingly, so an agent is not handed obvious junk.
 
-## 10. Usage metrics and quotas
-
-Per-account and per-org counters for messages sent and received, storage used, and inboxes held,
-with enforceable quotas.
-
 ## 11. Deliverability visibility as MCP tools
 
 Expose what an agent currently cannot see about its own sending: the DMARC aggregate reports for

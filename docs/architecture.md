@@ -31,8 +31,9 @@ MCP  /mcp           ─┘                ├─► R2, env.EMAIL.send
 
 Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate limit),
 `WEBHOOKS` (a producer on the `intray-webhooks` queue, consumed by this same Worker), and the
-vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS` plus the `OPERATOR_TOKEN`
-secret. `src/env.ts` turns those into a `Config`.
+vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`,
+`QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` plus
+the `OPERATOR_TOKEN` secret. `src/env.ts` turns those into a `Config`.
 
 ## Inbound
 
@@ -42,16 +43,18 @@ and calls `ingestInbound(env, {envelopeFrom, envelopeTo, raw})`, which runs:
 1. reject when `raw.byteLength` exceeds `INBOUND_MAX_BYTES` (`552 message too large`);
 2. `splitTag(envelopeTo)` then `getInbox` on the base address, rejecting an unknown recipient
    (`550 no such inbox`); the `+tag` is stripped for the lookup, so tagged addresses land in the
-   base inbox, and it is kept for step 6;
-3. `parseMime(raw)` through `postal-mime`, yielding a `ParsedEmail` with bare RFC identifiers and a
+   base inbox, and it is kept for step 7;
+3. `withinInboundQuota` on the owning account, rejecting a message past the received or storage
+   quota (`552 quota exceeded`) before anything is written;
+4. `parseMime(raw)` through `postal-mime`, yielding a `ParsedEmail` with bare RFC identifiers and a
    `preview` derived from the text body, or from tag-stripped html when there is none;
-4. `BUCKET.put("raw/{message_id}.eml")` and `BUCKET.put("att/{message_id}/{n}")` per attachment;
-5. `resolveThreadId` matching `[inReplyTo, ...references]` against `messages.rfc_message_id` in the
+5. `BUCKET.put("raw/{message_id}.eml")` and `BUCKET.put("att/{message_id}/{n}")` per attachment;
+6. `resolveThreadId` matching `[inReplyTo, ...references]` against `messages.rfc_message_id` in the
    same inbox, else a new `thr_` row whose subject and participants come from this message;
-6. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` plus the recipient's
+7. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` plus the recipient's
    tag when it can be a label, `size`, `has_attachments` and `raw_key`, then one `insertAttachment`
    per stored object;
-7. `touchThread`, which bumps `last_message_at`, rewrites `participants_json`, fills a missing
+8. `touchThread`, which bumps `last_message_at`, rewrites `participants_json`, fills a missing
    subject, and increments `message_count`.
 
 Rejections are thrown as `InboundRejected` and turned into `message.setReject(reason)` by
@@ -62,7 +65,7 @@ Threading has no subject-based fallback: a reply from a client that drops both `
 
 ### Attachment text
 
-Step 7 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
+Step 8 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
 `extractText(contentType, filename, bytes)` from `src/email/extract.ts` over the bytes already in
 memory and writes the result onto the row with `updateAttachmentText`. PDF goes through `unpdf`,
 pdf.js packaged for serverless runtimes; docx is unzipped with `fflate` and the text runs are pulled
@@ -82,18 +85,20 @@ Worker's cold-start path; `fflate` is small enough to stay a static import.
 
 ## Outbound
 
-`sendMessage`, `replyToMessage` and `forwardMessage` in `src/core/messages.ts` run the same five
+`sendMessage`, `replyToMessage` and `forwardMessage` in `src/core/messages.ts` run the same six
 steps:
 
 1. `requireInbox`, which scopes the inbox to the calling principal's account;
-2. build through `src/email/outbound.ts`, which normalizes and dedupes recipients, enforces
+2. `assertSendQuota`, which throws `429 quota_exceeded` when the account has already sent
+   `QUOTA_MESSAGES_SENT_PER_MONTH` this UTC month, before anything is composed;
+3. build through `src/email/outbound.ts`, which normalizes and dedupes recipients, enforces
    `OUTBOUND_MAX_RECIPIENTS`, `OUTBOUND_MAX_ATTACHMENTS` and `OUTBOUND_MAX_BYTES`, and returns both
    an `EmailMessageBuilder` and the derived fields the row needs;
-3. reject an unverified account sending anywhere but its own `accounts.email` with
+4. reject an unverified account sending anywhere but its own `accounts.email` with
    `403 message_rejected`;
-4. `send`, which maps the binding's `E_*` codes onto `AppError`s and normalizes the returned
+5. `send`, which maps the binding's `E_*` codes onto `AppError`s and normalizes the returned
    `messageId`;
-5. persist one `direction: "outbound"` row labelled `["sent"]` with `raw_key` null, store each
+6. persist one `direction: "outbound"` row labelled `["sent"]` with `raw_key` null, store each
    attachment at `att/{message_id}/{n}`, and call `touchThread`.
 
 All three take an optional `from`. `resolveSender` accepts it only when it normalizes to the
@@ -179,6 +184,46 @@ The secret is stored as written rather than hashed, unlike an API key, because H
 original bytes. It is returned only by the create call, so a subscriber that loses it registers
 another webhook.
 
+## Usage
+
+`src/core/usage.ts` keeps per-account counters and enforces the quotas over them; `src/db/usage.ts`
+holds the SQL. Everything lands in one `usage` table keyed `(account_id, period)`, where `period` is
+either a `YYYY-MM` UTC month, carrying `messages_sent` and `messages_received`, or the literal `all`,
+carrying the running `storage_bytes`. One table holds both the monthly and the lifetime figures, so a
+new month costs no schema and no migration. Inboxes held is not stored: `countInboxes` reads it live,
+because it is already a cheap indexed count and a stored copy could drift.
+
+Every counter is a single `INSERT ... ON CONFLICT DO UPDATE` that adds to the column, never a read
+followed by a write, so two ingests landing in the same millisecond both count. `storage_bytes` is
+clamped with `MAX(0, ...)` on both the insert and the update path, because a deployment that adopts
+the counters mid-life deletes objects it never counted and would otherwise go negative.
+
+`recordReceived` is called by `ingestInbound` once the message, its attachments and the thread are
+written; `recordSent` by `persistOutbound`, which covers a send, a reply, a forward and a draft send
+alike, since drafts go through the same functions. `recordStorageDelta` runs negative on every delete
+path: message delete, batch delete, thread delete and inbox delete, each summing the rows it is about
+to remove before it removes them. The bytes counted per message are the size on the message row plus
+the size of each stored attachment. Draft attachment bytes under `drf/` are deliberately not counted:
+a draft is a work in progress, its bytes move under `att/` when it sends, and counting both would
+charge for the same attachment twice.
+
+Like `emitEvent`, none of the counters can fail the operation they accompany: each swallows and logs
+its error, because an accounting write must never bounce mail or fail an agent's send.
+
+The quotas are `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and
+`QUOTA_STORAGE_BYTES`, all unlimited when empty, absent or `0`. `assertSendQuota` runs in
+`sendMessage`, `replyToMessage` and `forwardMessage` right after `requireInbox` and before the
+message is built, so nothing is composed or sent for a request that cannot land; it throws 429
+`quota_exceeded`. `withinInboundQuota` runs in `ingestInbound` right after the recipient resolves and
+before the first R2 put, so a rejected message leaves no rows and no objects; the handler turns it
+into `552 quota exceeded`. Inbox creation keeps its own `INBOX_LIMIT` check and its `conflict` error.
+The operator principal is exempt from all three, on the same reasoning as the rest of the operator
+token: a personal deployment should not be able to lock itself out. Its usage is still counted.
+
+Counters are per account. An org rollup, once orgs exist, is a `GROUP BY` over the member accounts'
+rows for a period, which is why `period` carries its own index and why nothing here is keyed on an
+org.
+
 ## Auth and onboarding
 
 `signup(env, {email, username?}, {ip?})` validates and lowercases the email, refuses a blocked
@@ -202,7 +247,7 @@ looks it up by hash among the unrevoked, activated rows, loads the account, and 
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, thirty-three with one.
+registered depends on the result: three onboarding tools without a live key, thirty-four with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -222,6 +267,7 @@ numbered migration.
 | `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key` |
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |
 | `drafts` | `draft_id` (`drf_`) | `kind`, `parent_message_id`, `body_json` (attachment metadata only, bytes in R2), `send_at`, `status`, `sent_message_id`, `error`; indexed on `(inbox_id, updated_at)` and `(status, send_at)` |
+| `usage` | `(account_id, period)` | `period` is a `YYYY-MM` UTC month or the literal `all`; `messages_sent`, `messages_received`, `storage_bytes` |
 | `webhooks` | `webhook_id` (`whk_`) | `account_id`, `url`, `secret`, `events_json`, `description`, `active` |
 | `messages_fts` | `message_id` (UNINDEXED) | FTS5 index over `subject`, `text`, `from_addr`, `from_name`; `inbox_id` UNINDEXED |
 

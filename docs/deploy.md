@@ -327,7 +327,8 @@ Register the MCP endpoint with a client:
 claude mcp add --transport http intray http://localhost:8787/mcp --header "Authorization: Bearer $KEY"
 ```
 
-The test suite pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS` and
+The test suite pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`, the three
+`QUOTA_*` vars and
 `OPERATOR_TOKEN` in `vitest.config.ts`, so changing those vars in `wrangler.jsonc` does not move
 the suite.
 
@@ -383,6 +384,11 @@ Edit `vars` in `wrangler.jsonc`:
 - `PUBLIC_URL` — the deployed origin with no trailing slash, e.g.
   `https://intray.example.workers.dev`.
 - `ALLOWED_SIGNUP_EMAILS` — comma-separated addresses allowed to sign up. `""` leaves signup open.
+- `QUOTA_MESSAGES_SENT_PER_MONTH` — per-account cap on messages sent in a UTC month, as a string.
+  `""` or `0` is unlimited.
+- `QUOTA_MESSAGES_RECEIVED_PER_MONTH` — per-account cap on messages received in a UTC month, as a
+  string. `""` or `0` is unlimited.
+- `QUOTA_STORAGE_BYTES` — per-account cap on stored bytes, as a string. `""` or `0` is unlimited.
 
 Leave `MAIL_DOMAINS` until step 9, once the domain can actually receive and send.
 

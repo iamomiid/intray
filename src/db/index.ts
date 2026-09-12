@@ -7,4 +7,5 @@ export * from "./messages";
 export * from "./otps";
 export * from "./rows";
 export * from "./threads";
+export * from "./usage";
 export * from "./webhooks";

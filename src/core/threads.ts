@@ -6,6 +6,7 @@ import {
   getThread as getThreadRow,
   listThreads as listThreadRows,
 } from "../db/threads";
+import { storageForThread } from "../db/usage";
 import type { Env } from "../env";
 import { notFound } from "../lib/errors";
 import { clampLimit, decodeCursor, type Page, page } from "../lib/pagination";
@@ -20,6 +21,7 @@ import {
   toMessage,
   toThread,
 } from "./serialize";
+import { recordStorageDelta } from "./usage";
 
 export interface ListThreadsQuery {
   limit?: number | string;
@@ -131,10 +133,12 @@ export async function deleteThread(
   threadId: string,
 ): Promise<DeletedThread> {
   const owner = await requireThread(env, principal, inboxId, threadId);
+  const released = await storageForThread(env.DB, owner.thread.thread_id);
   const removed = await deleteThreadRow(env.DB, owner.inboxId, owner.thread.thread_id);
   if (removed === null) {
     throw notFound("thread not found");
   }
+  await recordStorageDelta(env.DB, principal.account.id, -released);
   await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys]);
   return { deleted: true };
 }

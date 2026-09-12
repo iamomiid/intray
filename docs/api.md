@@ -45,6 +45,9 @@ key lookup.
 | `INBOX_LIMIT` | per-account inbox cap, as a string. Default `10` |
 | `PUBLIC_URL` | deployed origin, no trailing slash |
 | `ALLOWED_SIGNUP_EMAILS` | comma-separated allowlist of signup addresses. Empty or absent leaves signup open; otherwise any other address gets 403 `signup_closed` before any rate limit or write |
+| `QUOTA_MESSAGES_SENT_PER_MONTH` | per-account cap on messages sent in a UTC month, as a string. Empty, absent or `0` is unlimited |
+| `QUOTA_MESSAGES_RECEIVED_PER_MONTH` | per-account cap on messages received in a UTC month, as a string. Empty, absent or `0` is unlimited |
+| `QUOTA_STORAGE_BYTES` | per-account cap on stored bytes, as a string. Empty, absent or `0` is unlimited |
 | `OPERATOR_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put OPERATOR_TOKEN` or `pnpm run setup --operator-token`, never in `wrangler.jsonc`. Authenticates the operator principal. Absent, empty, or shorter than 32 characters disables it. Put it in `.dev.vars` for `pnpm dev` |
 
 Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm run setup
@@ -63,12 +66,14 @@ Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm 
 | 403 | `forbidden`, `message_rejected`, `signup_closed` |
 | 404 | `not_found` |
 | 409 | `conflict`, `inbox_taken` |
-| 429 | `too_many_requests` |
+| 429 | `too_many_requests`, `quota_exceeded` |
 | 500 | `internal_error` |
 
 `message_rejected` is returned when an unverified account tries to send to any address other than
 its own `accounts.email`. `signup_closed` is returned when `ALLOWED_SIGNUP_EMAILS` is set and the
-address is not in it. `email reserved` is returned when a signup names the operator address.
+address is not in it. `email reserved` is returned when a signup names the operator address. `quota_exceeded` is returned when a send, reply, forward or draft
+send would pass `QUOTA_MESSAGES_SENT_PER_MONTH`; inbound mail past a quota is refused at the SMTP
+transaction with `552 quota exceeded` and never becomes an API error.
 
 ## Status codes
 
@@ -452,6 +457,44 @@ minutes after their attempt. It is set per message, which is why the queue carri
 of its own. Delivery is at-least-once and unordered: deduplicate on `delivery_id`. A delivery for a
 webhook that has since been deleted or deactivated is discarded rather than retried.
 
+### Usage
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| GET | `/usage` | the usage object below |
+
+```json
+{
+  "period": "2026-09",
+  "messages_sent": 12,
+  "messages_received": 40,
+  "storage_bytes": 918273,
+  "inboxes": 2,
+  "limits": {
+    "messages_sent": null,
+    "messages_received": null,
+    "storage_bytes": null,
+    "inboxes": 10
+  }
+}
+```
+
+`period` is the current UTC month. `messages_sent` and `messages_received` count that month;
+`storage_bytes` is a running total that is not reset by a new month, and `inboxes` is counted live.
+A `null` limit is unlimited; `limits.inboxes` is `INBOX_LIMIT` and is never null.
+
+`storage_bytes` counts, per message, the size recorded on the message row plus the size of each
+stored attachment: for received mail the raw MIME object plus each attachment object, for sent mail
+the composed message plus each attachment object. Every delete path gives the bytes back: message
+delete, batch delete, thread delete and inbox delete. Draft attachments do not count.
+
+Quotas are enforced where the work happens, not on this endpoint. A send, reply, forward or draft
+send past `QUOTA_MESSAGES_SENT_PER_MONTH` answers 429 `quota_exceeded` before the message is built.
+Inbound mail past `QUOTA_MESSAGES_RECEIVED_PER_MONTH`, or that would push `storage_bytes` past
+`QUOTA_STORAGE_BYTES`, is rejected with `552 quota exceeded` before anything is written. Creating an
+inbox past `INBOX_LIMIT` keeps its 409 `conflict`. The operator principal is exempt from all three
+quotas, and its own usage is still counted.
+
 ### Service endpoints
 
 | Method | Path | Returns |
@@ -511,6 +554,7 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `delete_draft` | `inbox_id`, `draft_id` |
 | `send_draft` | `inbox_id`, `draft_id` |
 | `create_api_key` | `name?` |
+| `get_usage` | — |
 | `list_webhooks` | — |
 | `create_webhook` | `url`, `events?`, `description?` |
 | `get_webhook` | `webhook_id` |

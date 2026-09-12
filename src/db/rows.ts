@@ -99,6 +99,16 @@ export interface AttachmentRow {
   text_status: string;
 }
 
+export interface UsageRow {
+  account_id: string;
+  period: string;
+  messages_sent: number;
+  messages_received: number;
+  storage_bytes: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface WebhookRow {
   webhook_id: string;
   account_id: string;
