@@ -7,6 +7,7 @@ export * from "./invites";
 export * from "./keys";
 export * from "./memberships";
 export * from "./messages";
+export * from "./oauth";
 export * from "./orgs";
 export * from "./otps";
 export * from "./rows";

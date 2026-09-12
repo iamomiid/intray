@@ -43,11 +43,6 @@ Sends to a suppressed address fail fast with a clear error instead of burning qu
 from item 3 feed the same list from their own bounce notifications: SES over SNS, Resend over
 its webhooks, SMTP from DSN mail arriving at the inbound adapter.
 
-## 6. OAuth for MCP clients
-
-Authorization-code flow for MCP clients that cannot set static headers, issuing tokens that map to
-the same API-key records.
-
 ## 7. Spam scoring and virus scanning on inbound
 
 Score inbound mail and label or reject accordingly, so an agent is not handed obvious junk.

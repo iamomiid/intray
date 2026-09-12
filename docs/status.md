@@ -17,11 +17,11 @@ What is built, and what a contributor needs to know before touching it. Design r
 | inbound | done | `src/email/{inbound,threading,parse}.ts`; `email()` stores to D1 and R2 |
 | routing | done | `src/core/routing.ts`, `src/lib/cloudflare.ts`, `migrations/0008_routing.sql`; `ROUTING_MODE` is `catch_all` by default, `per_inbox` gives every inbox its own Email Routing rule created before the row and removed before the row, the setup's Routing steps write the vars, the `ROUTING_API_TOKEN` secret and reconcile the zone's rules against the deployment's inboxes |
 | outbound | done | recipient normalization, send/reply/forward builders, limit checks, send-error mapping |
-| core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments`, `orgs`, `audit` |
+| core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments`, `orgs`, `audit`, `oauth` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
 | schemas | done | `src/schemas/`, one module per resource plus `objects.ts`; the MCP tools' `inputSchema` and the OpenAPI document both read from it, and `test/schemas.test.ts` parses a serialized row of each kind against its schema |
 | openapi | done | `GET /openapi.json`, built in `src/http/openapi.ts` from a route table and `z.toJSONSchema`, served by `src/http/routes/openapi.ts`; `test/openapi.test.ts` compares the document against `app.routes` in both directions |
-| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 45 with one |
+| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 45 with one, and 401 with a `WWW-Authenticate` resource pointer for a key that resolves to nothing |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
 | batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
@@ -31,6 +31,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | webhooks | done | `src/core/webhooks.ts`; per-account https endpoints for `message.received` and `message.sent`, HMAC-SHA256 signed, delivered and retried through the `intray-webhooks` queue |
 | wait | done | `src/waiter.ts`; `InboxWaiter` is a Durable Object per inbox holding parked `wait` calls and no storage, notified by `ingestInbound` after the row is committed, with the 2-second D1 poll kept as the fallback when `INBOX_WAITER` is unbound or the RPC throws |
 | usage | done | `src/core/usage.ts`, `src/db/usage.ts`, `migrations/0007_usage.sql`; upsert counters for messages sent, messages received and stored bytes, read through `GET /v1/usage` or `get_usage`, enforced as `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` |
+| oauth | done | `src/core/oauth.ts`, `src/http/routes/oauth.ts`, `src/http/oauth-pages.ts`, `migrations/0009_oauth.sql`; RFC 8414 and RFC 9728 metadata, RFC 7591 registration, an authorization-code flow with PKCE behind the existing OTP, and tokens that are ordinary `api_keys` rows |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time. Text is extracted from PDF and docx on ingest into `attachments.text`, read through `GET .../attachments/:attachment_id/text` or `get_attachment`; `text_status` rides on every attachment object |
 
 ## Limitations
@@ -46,6 +47,14 @@ What is built, and what a contributor needs to know before touching it. Design r
   slower than a D1 write and both fail with 503 `routing_unavailable` while the API is unreachable.
   Nothing retries; the setup's reconcile is what repairs a create that got the rule but not the row
   or the other way round.
+- OAuth issues no refresh token and the access token does not expire. It is an `api_keys` row, so
+  ending a connection means revoking the key through `DELETE /v1/api-keys/:key_id`; a client that
+  loses its token runs the flow again.
+- OAuth clients are public clients only. There is no client secret, no `client_credentials` grant
+  and no registration access token, so a registered client cannot update or delete its own
+  registration and `oauth_clients` rows are never cleaned up.
+- An OAuth token is always scoped `*`. The `scope` parameter is recorded on the authorization and
+  otherwise unused, so a client cannot ask for a key limited to one inbox.
 - One org per deployment. `POST /v1/orgs` answers `conflict` once an org exists, and `signupInvite`
   looks the invite up in that single org, so a deployment cannot host two companies.
 - Removing a member drops the membership and revokes their keys but keeps their inboxes, threads
@@ -70,6 +79,9 @@ What is built, and what a contributor needs to know before touching it. Design r
   `References` starts a new thread.
 - `reply_all` puts every merged recipient in `To` and never in `Cc`, and a forward re-sends the
   parent's inline attachments as ordinary attachments. Both are simplifications.
+- `GET /oauth/authorize` is the one human-facing page the service serves, and it is deliberately
+  plain: no JavaScript, no external assets, no styling beyond a few inline rules. It is not a
+  dashboard and nothing else should grow onto it.
 - `signup` over MCP has no client IP, so it passes an empty `SignupContext` and skips the per-IP
   rate limiter. Only the per-account hourly OTP cap applies on that path.
 - `0001_init.sql` is the released baseline and is never edited. Every schema change is a new

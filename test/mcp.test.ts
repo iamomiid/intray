@@ -108,6 +108,18 @@ async function rpc(
   return JSON.parse(line.slice("data: ".length)) as JsonRpcResponse;
 }
 
+function listTools(apiKey: string): Promise<Response> {
+  return SELF.fetch("http://intray.test/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  });
+}
+
 async function toolNames(apiKey?: string): Promise<string[]> {
   const message = await rpc("tools/list", {}, apiKey);
   expect(message.error).toBeUndefined();
@@ -184,8 +196,13 @@ it("serves only the onboarding tools without a key", async () => {
   expect(await toolNames()).toEqual(ONBOARDING_TOOLS);
 });
 
-it("serves the onboarding tools for a key that does not resolve", async () => {
-  expect(await toolNames("it_not-a-real-key")).toEqual(ONBOARDING_TOOLS);
+it("answers 401 with the resource metadata pointer for a key that does not resolve", async () => {
+  const response = await listTools("it_not-a-real-key");
+
+  expect(response.status).toBe(401);
+  expect(response.headers.get("www-authenticate")).toBe(
+    'Bearer resource_metadata="http://localhost:8787/.well-known/oauth-protected-resource"',
+  );
 });
 
 it("signs up over MCP and unlocks the authenticated tool set", async () => {
@@ -258,7 +275,7 @@ it("serves only the onboarding tools to a pending key and swaps it in on verify"
   expect(verified.verified).toBe(true);
 
   expect(await toolNames(second.api_key)).toEqual(AGENT_TOOLS);
-  expect(await toolNames(first.api_key)).toEqual(ONBOARDING_TOOLS);
+  expect((await listTools(first.api_key)).status).toBe(401);
 });
 
 it("rejects verify when the api_key does not resolve", async () => {

@@ -69,7 +69,7 @@ async function oldestInbox(env: Env, accountId: string): Promise<InboxRow | null
   return rows[rows.length - 1] ?? null;
 }
 
-async function issueOtp(env: Env, accountId: string, email: string): Promise<boolean> {
+export async function issueOtp(env: Env, accountId: string, email: string): Promise<boolean> {
   const issuedAt = now();
   const recent = await countOtpsSince(env.DB, accountId, issuedAt - OTP_WINDOW_MS);
   if (recent >= OTP_MAX_PER_HOUR) {
@@ -170,6 +170,28 @@ export async function signup(
   };
 }
 
+export async function consumeOtp(env: Env, account: AccountRow, rawCode: unknown): Promise<number> {
+  const otp = await getLatestOtp(env.DB, account.id);
+  const checkedAt = now();
+  if (otp === null || otp.expires_at <= checkedAt) {
+    throw badRequest("code expired", "invalid_code");
+  }
+  if (otp.attempts >= OTP_MAX_ATTEMPTS) {
+    throw tooManyRequests("too many attempts");
+  }
+  const code = typeof rawCode === "string" ? rawCode.trim() : "";
+  if (!constantTimeEqual(await sha256Hex(code), otp.code_hash)) {
+    await incrementOtpAttempts(env.DB, account.id, otp.created_at);
+    throw badRequest("invalid code", "invalid_code");
+  }
+  const verifiedAt =
+    account.verified_at ??
+    (await markAccountVerified(env.DB, account.id, checkedAt))?.verified_at ??
+    checkedAt;
+  await deleteOtps(env.DB, account.id);
+  return verifiedAt;
+}
+
 export async function verify(
   env: Env,
   principal: Principal,
@@ -179,28 +201,12 @@ export async function verify(
   if (account.verified_at !== null && !principal.pending) {
     return { account_id: account.id, verified: true, verified_at: account.verified_at };
   }
-  const otp = await getLatestOtp(env.DB, account.id);
-  const checkedAt = now();
-  if (otp === null || otp.expires_at <= checkedAt) {
-    throw badRequest("code expired", "invalid_code");
-  }
-  if (otp.attempts >= OTP_MAX_ATTEMPTS) {
-    throw tooManyRequests("too many attempts");
-  }
-  const code = typeof input.code === "string" ? input.code.trim() : "";
-  if (!constantTimeEqual(await sha256Hex(code), otp.code_hash)) {
-    await incrementOtpAttempts(env.DB, account.id, otp.created_at);
-    throw badRequest("invalid code", "invalid_code");
-  }
-  const verifiedAt =
-    account.verified_at ??
-    (await markAccountVerified(env.DB, account.id, checkedAt))?.verified_at ??
-    checkedAt;
+  const verifiedAt = await consumeOtp(env, account, input.code);
   if (principal.pending) {
-    await activateApiKey(env.DB, principal.keyId, checkedAt);
-    await revokeOtherApiKeys(env.DB, account.id, principal.keyId, checkedAt);
+    const activatedAt = now();
+    await activateApiKey(env.DB, principal.keyId, activatedAt);
+    await revokeOtherApiKeys(env.DB, account.id, principal.keyId, activatedAt);
   }
-  await deleteOtps(env.DB, account.id);
   return {
     account_id: account.id,
     verified: true,

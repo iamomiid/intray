@@ -5,6 +5,7 @@ export * from "./drafts";
 export * from "./inboxes";
 export * from "./keys";
 export * from "./messages";
+export * from "./oauth";
 export * from "./operator";
 export * from "./orgs";
 export * from "./principal";

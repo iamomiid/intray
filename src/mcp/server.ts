@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { authenticate } from "../core/keys";
+import { protectedResourceMetadataUrl } from "../core/oauth";
 import { OPERATOR_KEY_ID } from "../core/operator";
 import { isOrgAdmin } from "../core/orgs";
 import type { Principal } from "../core/principal";
@@ -75,12 +76,37 @@ export function buildServer(env: Env, principal: Principal | null, orgAdmin = fa
   return server;
 }
 
+function unauthorized(env: Env): Response {
+  return new Response(
+    JSON.stringify({ error: { code: "unauthorized", message: "invalid api key" } }),
+    {
+      status: 401,
+      headers: {
+        "content-type": "application/json",
+        "www-authenticate": `Bearer resource_metadata="${protectedResourceMetadataUrl(env)}"`,
+      },
+    },
+  );
+}
+
+async function isPendingKey(env: Env, key: string | null): Promise<boolean> {
+  return (await authenticate(env, key, { allowPending: true })) !== null;
+}
+
 export async function handleMcp(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  const principal = await authenticate(env, readApiKey(request));
+  const key = readApiKey(request);
+  const principal = await authenticate(env, key);
+  if (
+    principal === null &&
+    request.headers.get("authorization") !== null &&
+    !(await isPendingKey(env, key))
+  ) {
+    return unauthorized(env);
+  }
   const orgAdmin = principal !== null && (await isOrgAdmin(env, principal));
   const handler = createMcpHandler(() => buildServer(env, principal, orgAdmin), {
     route: "/mcp",
