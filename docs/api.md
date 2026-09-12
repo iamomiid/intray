@@ -197,6 +197,15 @@ Threads are ordered by `last_message_at` descending.
 are Unix milliseconds and bound `created_at`. Messages are ordered by `created_at` descending,
 except `wait`, which returns ascending.
 
+`search` is a full-text query over `subject`, the text body, the sender address and the sender
+name. `q` is plain words: whitespace separates them, every word must match, and each matches by
+prefix, so `invoice` finds `invoices`. Punctuation carries no meaning, and neither do the words
+`AND`, `OR`, `NOT` and `NEAR`; they are searched for literally. A `q` of at most 16 words is
+accepted, and one that reduces to no searchable word is `bad_request`. Results are ordered by
+relevance, weighting a subject hit above a body hit, and break ties on `created_at` descending.
+Because that order is not a key, `page_token` here encodes a position in the result set rather than
+a message, so a page taken while new mail arrives can shift.
+
 `wait` blocks until a message with `created_at` greater than `since` arrives, or until `timeout`
 seconds elapse, whichever comes first. `timeout` defaults to 30 and caps at 55. It polls every 2
 seconds and returns an empty `items` array on timeout.

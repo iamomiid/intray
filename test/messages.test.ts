@@ -206,6 +206,102 @@ it("searches subject, body, and sender", async () => {
   await rejectsWith(searchMessages(env, principal, INBOX_ID, { q: "  " }), 400, "bad_request");
 });
 
+it("searches sender address and sender name", async () => {
+  await seed({ id: "a", createdAt: 1000, from: "billing@vendor.example", subject: "Statement" });
+  await seed({ id: "b", createdAt: 2000, from: "alice@example.com", subject: "Lunch" });
+  await env.DB.prepare(`UPDATE messages SET from_name = ? WHERE message_id = ?`)
+    .bind("Alice Example", "msg_b")
+    .run();
+
+  const byAddress = await searchMessages(env, principal, INBOX_ID, { q: "billing@vendor.example" });
+  expect(byAddress.items.map((message) => message.message_id)).toEqual(["msg_a"]);
+
+  const byName = await searchMessages(env, principal, INBOX_ID, { q: "alice example" });
+  expect(byName.items.map((message) => message.message_id)).toEqual(["msg_b"]);
+});
+
+it("matches prefixes and ands every term", async () => {
+  await seed({ id: "a", createdAt: 1000, subject: "Invoices for March", text: "all green" });
+  await seed({ id: "b", createdAt: 2000, subject: "Receipts for March", text: "all green" });
+
+  const prefix = await searchMessages(env, principal, INBOX_ID, { q: "invoice" });
+  expect(prefix.items.map((message) => message.message_id)).toEqual(["msg_a"]);
+
+  const both = await searchMessages(env, principal, INBOX_ID, { q: "march receipt" });
+  expect(both.items.map((message) => message.message_id)).toEqual(["msg_b"]);
+
+  const neither = await searchMessages(env, principal, INBOX_ID, { q: "march telephone" });
+  expect(neither.items).toEqual([]);
+});
+
+it("ranks a subject hit above a body hit", async () => {
+  await seed({ id: "a", createdAt: 1000, subject: "Invoice 42", text: "all green" });
+  await seed({ id: "b", createdAt: 2000, subject: "Lunch", text: "the invoice is attached" });
+
+  const ranked = await searchMessages(env, principal, INBOX_ID, { q: "invoice" });
+  expect(ranked.items.map((message) => message.message_id)).toEqual(["msg_a", "msg_b"]);
+});
+
+it("treats fts operators in q as plain text and caps the term count", async () => {
+  await seed({ id: "a", createdAt: 1000, subject: "Invoice 42", text: "all green" });
+
+  for (const q of ['invoice "42"', "invoice*", "invoice -42", "(invoice)"]) {
+    const hits = await searchMessages(env, principal, INBOX_ID, { q });
+    expect(hits.items.map((message) => message.message_id)).toEqual(["msg_a"]);
+  }
+
+  const asOperator = await searchMessages(env, principal, INBOX_ID, { q: "invoice OR telephone" });
+  expect(asOperator.items).toEqual([]);
+
+  await rejectsWith(
+    searchMessages(env, principal, INBOX_ID, { q: '" * - ( )' }),
+    400,
+    "bad_request",
+  );
+
+  const tooMany = Array.from({ length: 17 }, (_, index) => `term${index}`).join(" ");
+  await rejectsWith(searchMessages(env, principal, INBOX_ID, { q: tooMany }), 400, "bad_request");
+
+  const atCap = Array.from({ length: 16 }, (_, index) => `term${index}`).join(" ");
+  expect((await searchMessages(env, principal, INBOX_ID, { q: atCap })).items).toEqual([]);
+});
+
+it("pages search results without repeating a message", async () => {
+  for (let index = 0; index < 3; index += 1) {
+    await seed({ id: String(index), createdAt: 1000 + index, subject: "Invoice", text: "green" });
+  }
+
+  const first = await searchMessages(env, principal, INBOX_ID, { q: "invoice", limit: 2 });
+  expect(first.items.map((message) => message.message_id)).toEqual(["msg_2", "msg_1"]);
+  expect(first.next_page_token).not.toBeNull();
+
+  const second = await searchMessages(env, principal, INBOX_ID, {
+    q: "invoice",
+    limit: 2,
+    page_token: first.next_page_token ?? "",
+  });
+  expect(second.items.map((message) => message.message_id)).toEqual(["msg_0"]);
+  expect(second.next_page_token).toBeNull();
+
+  await rejectsWith(
+    searchMessages(env, principal, INBOX_ID, { q: "invoice", page_token: "not-a-token" }),
+    400,
+    "bad_request",
+  );
+});
+
+it("keeps the search index in sync with message writes", async () => {
+  const messageId = await seed({ id: "a", createdAt: 1000, subject: "Invoice 42", text: "green" });
+  expect((await searchMessages(env, principal, INBOX_ID, { q: "invoice" })).items).toHaveLength(1);
+
+  await updateMessageLabels(env, principal, INBOX_ID, messageId, { labels: ["received", "done"] });
+  const relabelled = await searchMessages(env, principal, INBOX_ID, { q: "invoice" });
+  expect(relabelled.items.map((message) => message.labels)).toEqual([["received", "done"]]);
+
+  await deleteMessage(env, principal, INBOX_ID, messageId);
+  expect((await searchMessages(env, principal, INBOX_ID, { q: "invoice" })).items).toEqual([]);
+});
+
 it("returns a message with its attachments", async () => {
   const delivered = await deliver(htmlAttachmentEml, "carol@example.com");
   const message = await getMessage(env, principal, INBOX_ID, delivered.messageId);

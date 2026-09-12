@@ -4,6 +4,17 @@ const COLUMNS = `message_id, inbox_id, thread_id, direction, rfc_message_id, in_
   references_json, from_addr, from_name, to_json, cc_json, bcc_json, reply_to, subject, text, html,
   preview, labels_json, size, has_attachments, raw_key, created_at`;
 
+const QUALIFIED_COLUMNS = COLUMNS.split(",")
+  .map((column) => `messages.${column.trim()}`)
+  .join(", ");
+
+const BM25_WEIGHTS = "10.0, 1.0, 4.0, 4.0";
+
+export interface SearchOptions {
+  limit: number;
+  offset: number;
+}
+
 export interface InsertMessageInput {
   messageId: string;
   inboxId: string;
@@ -189,30 +200,19 @@ export async function listMessages(
 export async function searchMessages(
   db: D1Database,
   inboxId: string,
-  q: string,
-  options: ListOptions,
+  match: string,
+  options: SearchOptions,
 ): Promise<MessageRow[]> {
-  const pattern = likePattern(q);
-  const conditions: string[] = [
-    "inbox_id = ?",
-    `(LOWER(subject) LIKE ? ESCAPE '\\' OR LOWER(text) LIKE ? ESCAPE '\\'
-      OR LOWER(from_addr) LIKE ? ESCAPE '\\' OR LOWER(from_name) LIKE ? ESCAPE '\\')`,
-  ];
-  const binds: unknown[] = [inboxId, pattern, pattern, pattern, pattern];
-
-  const cursor = options.cursor ?? null;
-  if (cursor !== null) {
-    conditions.push("(created_at < ? OR (created_at = ? AND message_id < ?))");
-    binds.push(cursor.at, cursor.at, cursor.id);
-  }
-  binds.push(options.limit + 1);
-
   const result = await db
     .prepare(
-      `SELECT ${COLUMNS} FROM messages WHERE ${conditions.join(" AND ")}
-       ORDER BY created_at DESC, message_id DESC LIMIT ?`,
+      `SELECT ${QUALIFIED_COLUMNS} FROM messages_fts
+       JOIN messages ON messages.message_id = messages_fts.message_id
+       WHERE messages_fts MATCH ? AND messages_fts.inbox_id = ?
+       ORDER BY bm25(messages_fts, ${BM25_WEIGHTS}), messages.created_at DESC,
+         messages.message_id DESC
+       LIMIT ? OFFSET ?`,
     )
-    .bind(...binds)
+    .bind(match, inboxId, options.limit + 1, options.offset)
     .all<MessageRow>();
   return result.results;
 }

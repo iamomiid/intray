@@ -43,6 +43,32 @@ export function decodeCursor(token: string): Cursor {
   return { at: candidate.at, id: candidate.id };
 }
 
+export function encodeOffset(offset: number): string {
+  const json = JSON.stringify({ offset });
+  return base64UrlEncode(new TextEncoder().encode(json));
+}
+
+export function decodeOffset(token: string): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(base64UrlDecode(token)));
+  } catch {
+    throw badRequest("invalid page token");
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw badRequest("invalid page token");
+  }
+  const candidate = parsed as { offset?: unknown };
+  if (
+    typeof candidate.offset !== "number" ||
+    !Number.isInteger(candidate.offset) ||
+    candidate.offset < 0
+  ) {
+    throw badRequest("invalid page token");
+  }
+  return candidate.offset;
+}
+
 export function clampLimit(raw: unknown, options: LimitOptions = DEFAULT_LIMITS): number {
   const value =
     typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseInt(raw, 10) : Number.NaN;
@@ -62,4 +88,11 @@ export function page<T>(rows: T[], limit: number, toCursor: (row: T) => Cursor):
     items,
     next_page_token: last === undefined ? null : encodeCursor(toCursor(last)),
   };
+}
+
+export function pageFromOffset<T>(rows: T[], limit: number, offset: number): Page<T> {
+  if (rows.length <= limit) {
+    return { items: rows, next_page_token: null };
+  }
+  return { items: rows.slice(0, limit), next_page_token: encodeOffset(offset + limit) };
 }

@@ -3,15 +3,18 @@ import { beforeEach, expect, it } from "vitest";
 import { insertAccount } from "../src/db/accounts";
 import { insertInbox } from "../src/db/inboxes";
 import {
+  deleteMessage,
   type InsertMessageInput,
   insertMessage,
   listMessages,
   listThreads,
   searchMessages,
+  updateMessageLabels,
 } from "../src/db/index";
 import type { MessageRow } from "../src/db/rows";
-import { insertThread, touchThread } from "../src/db/threads";
-import { decodeCursor, page } from "../src/lib/pagination";
+import { deleteThread, insertThread, touchThread } from "../src/db/threads";
+import { ftsMatch } from "../src/lib/fts";
+import { decodeCursor, decodeOffset, page, pageFromOffset } from "../src/lib/pagination";
 import { resetDatabase } from "./support";
 
 const ACCOUNT_ID = "acc_test";
@@ -54,6 +57,10 @@ function seedInput(seed: MessageSeed): InsertMessageInput {
     rawKey: `raw/${seed.messageId}.eml`,
     createdAt: seed.createdAt,
   };
+}
+
+function search(q: string): Promise<MessageRow[]> {
+  return searchMessages(env.DB, INBOX_ID, ftsMatch(q), { limit: 25, offset: 0 });
 }
 
 beforeEach(async () => {
@@ -182,14 +189,151 @@ it("searches subject, text, and sender", async () => {
     }),
   );
 
-  const hits = await searchMessages(env.DB, INBOX_ID, "INVOICE", { limit: 25 });
-  expect(hits.map((row) => row.message_id)).toEqual(["msg_b", "msg_a"]);
+  const hits = await search("INVOICE");
+  expect(hits.map((row) => row.message_id)).toEqual(["msg_a", "msg_b"]);
 
-  const bySender = await searchMessages(env.DB, INBOX_ID, "alice example", { limit: 25 });
+  const bySender = await search("alice example");
   expect(bySender).toHaveLength(2);
 
-  const miss = await searchMessages(env.DB, INBOX_ID, "nonexistent", { limit: 25 });
+  const byAddress = await search("alice@example.com");
+  expect(byAddress).toHaveLength(2);
+
+  const miss = await search("nonexistent");
   expect(miss).toHaveLength(0);
+});
+
+it("matches a prefix and ands every term", async () => {
+  await insertMessage(
+    env.DB,
+    seedInput({
+      messageId: "msg_a",
+      createdAt: 1000,
+      labels: ["received"],
+      subject: "Invoices for March",
+      text: "nothing to see",
+    }),
+  );
+  await insertMessage(
+    env.DB,
+    seedInput({
+      messageId: "msg_b",
+      createdAt: 2000,
+      labels: ["received"],
+      subject: "Receipts for March",
+      text: "nothing to see",
+    }),
+  );
+
+  expect((await search("invoice")).map((row) => row.message_id)).toEqual(["msg_a"]);
+  expect((await search("march")).map((row) => row.message_id)).toEqual(["msg_b", "msg_a"]);
+  expect((await search("invoice march")).map((row) => row.message_id)).toEqual(["msg_a"]);
+  expect(await search("invoice receipts")).toHaveLength(0);
+});
+
+it("treats fts operator characters as plain text", async () => {
+  await insertMessage(
+    env.DB,
+    seedInput({
+      messageId: "msg_a",
+      createdAt: 1000,
+      labels: ["received"],
+      subject: "Invoice 42",
+      text: "nothing to see",
+    }),
+  );
+
+  for (const q of ['invoice "42"', "invoice*", "invoice -42", "(invoice)", "^invoice"]) {
+    expect((await search(q)).map((row) => row.message_id)).toEqual(["msg_a"]);
+  }
+  expect(await search("invoice OR receipt")).toHaveLength(0);
+  expect(await search('invoice NEAR "receipt"')).toHaveLength(0);
+});
+
+it("keeps the fts index in sync with writes to messages", async () => {
+  await insertMessage(
+    env.DB,
+    seedInput({
+      messageId: "msg_a",
+      createdAt: 1000,
+      labels: ["received"],
+      subject: "Invoice 42",
+      text: "nothing to see",
+    }),
+  );
+  expect(await search("invoice")).toHaveLength(1);
+
+  await updateMessageLabels(env.DB, INBOX_ID, "msg_a", JSON.stringify(["received", "archived"]));
+  expect(await search("invoice")).toHaveLength(1);
+
+  await env.DB.prepare(`UPDATE messages SET subject = ? WHERE message_id = ?`)
+    .bind("Receipt 42", "msg_a")
+    .run();
+  expect(await search("invoice")).toHaveLength(0);
+  expect(await search("receipt")).toHaveLength(1);
+
+  await deleteMessage(env.DB, INBOX_ID, "msg_a");
+  expect(await search("receipt")).toHaveLength(0);
+});
+
+it("empties the fts index when resetDatabase clears messages", async () => {
+  await insertMessage(
+    env.DB,
+    seedInput({ messageId: "msg_a", createdAt: 1000, labels: ["received"] }),
+  );
+  await resetDatabase(env.DB);
+
+  const remaining = await env.DB.prepare(`SELECT COUNT(*) AS count FROM messages_fts`).first<{
+    count: number;
+  }>();
+  expect(remaining?.count).toBe(0);
+});
+
+it("clears the fts index when a thread is deleted", async () => {
+  await insertMessage(
+    env.DB,
+    seedInput({
+      messageId: "msg_a",
+      createdAt: 1000,
+      labels: ["received"],
+      subject: "Invoice 42",
+      text: "nothing to see",
+    }),
+  );
+  expect(await search("invoice")).toHaveLength(1);
+
+  await deleteThread(env.DB, INBOX_ID, THREAD_ID);
+  expect(await search("invoice")).toHaveLength(0);
+});
+
+it("pages search results by offset without repeating a row", async () => {
+  for (let index = 0; index < 5; index += 1) {
+    await insertMessage(
+      env.DB,
+      seedInput({
+        messageId: `msg_${index}`,
+        createdAt: 1000 + index,
+        labels: ["received"],
+        subject: "Invoice",
+        text: "nothing to see",
+      }),
+    );
+  }
+
+  const seen: string[] = [];
+  let token: string | null = null;
+  let pages = 0;
+  do {
+    const offset: number = token === null ? 0 : decodeOffset(token);
+    const rows = await searchMessages(env.DB, INBOX_ID, ftsMatch("invoice"), { limit: 2, offset });
+    const result = pageFromOffset(rows, 2, offset);
+    seen.push(...result.items.map((row) => row.message_id));
+    token = result.next_page_token;
+    pages += 1;
+  } while (token !== null);
+
+  expect(pages).toBe(3);
+  expect(seen).toEqual(["msg_4", "msg_3", "msg_2", "msg_1", "msg_0"]);
+  expect(new Set(seen).size).toBe(5);
 });
 
 it("orders threads by last activity descending", async () => {

@@ -244,7 +244,9 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
     "search_messages",
     {
       title: "Search messages",
-      description: "Search an inbox's messages by subject, body, and addresses.",
+      description:
+        "Full-text search over an inbox's subjects, bodies and senders. Give plain words: " +
+        "every word must match, a word matches by prefix, and results come back by relevance.",
       inputSchema: z.object({ inbox_id: inboxId, q: z.string(), ...pageArgs }),
     },
     (args) => run(() => searchMessages(env, principal, args.inbox_id, args)),
