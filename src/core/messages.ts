@@ -24,6 +24,7 @@ import {
   recountThread,
   touchThread,
 } from "../db/threads";
+import { storageForMessages } from "../db/usage";
 import {
   type BuiltMessage,
   buildForward,
@@ -56,6 +57,7 @@ import { deleteObjects } from "./objects";
 import { isVerified, type Principal } from "./principal";
 import { type MessageObject, parseStringArray, toMessage } from "./serialize";
 import { groupAttachments } from "./threads";
+import { assertSendQuota, recordSent, recordStorageDelta } from "./usage";
 import { emitEvent } from "./webhooks";
 
 const MAX_BATCH_MESSAGES = 100;
@@ -373,10 +375,12 @@ export async function deleteMessage(
 ): Promise<DeletedMessage> {
   const inbox = await requireInbox(env, principal, inboxId);
   const row = await requireMessage(env, inbox, messageId);
+  const released = await storageForMessages(env.DB, [messageId]);
   const removed = await deleteMessageRow(env.DB, inbox.inbox_id, messageId);
   if (removed === null) {
     throw notFound("message not found");
   }
+  await recordStorageDelta(env.DB, inbox.account_id, -released);
   await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys]);
 
   const remaining = await listMessagesByThread(env.DB, row.thread_id);
@@ -422,7 +426,9 @@ export async function batchDeleteMessages(
   const inbox = await requireInbox(env, principal, inboxId);
   const messageIds = normalizeMessageIds(body.message_ids);
   const rows = await requireMessages(env, inbox, messageIds);
+  const released = await storageForMessages(env.DB, messageIds);
   const removed = await deleteMessageRows(env.DB, inbox.inbox_id, rows);
+  await recordStorageDelta(env.DB, inbox.account_id, -released);
   await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys]);
   return { deleted: rows.length };
 }
@@ -559,6 +565,11 @@ async function persistOutbound(
   });
 
   await emitEvent(env, inbox.account_id, "message.sent", inbox.inbox_id, messageId);
+  await recordSent(
+    env.DB,
+    inbox.account_id,
+    attachments.reduce((total, attachment) => total + attachment.size, built.size),
+  );
   return toMessage(row, attachments);
 }
 
@@ -569,6 +580,7 @@ export async function sendMessage(
   body: SendMessageBody,
 ): Promise<MessageObject> {
   const inbox = await requireInbox(env, principal, inboxId);
+  await assertSendQuota(env, principal);
   const sender = resolveSender(inbox, body.from);
   const built = buildSend({
     from: { name: inbox.display_name, email: sender.email },
@@ -595,6 +607,7 @@ export async function replyToMessage(
   body: ReplyInput,
 ): Promise<MessageObject> {
   const inbox = await requireInbox(env, principal, inboxId);
+  await assertSendQuota(env, principal);
   const parent = await requireMessage(env, inbox, messageId);
   const sender = resolveSender(inbox, body.from);
   const built = buildReply(parent, inbox, body, {
@@ -615,6 +628,7 @@ export async function forwardMessage(
   body: ForwardInput,
 ): Promise<MessageObject> {
   const inbox = await requireInbox(env, principal, inboxId);
+  await assertSendQuota(env, principal);
   const parent = await requireMessage(env, inbox, messageId);
   const parentAttachments = await listAttachmentRows(env.DB, parent.message_id);
   const sender = resolveSender(inbox, body.from);

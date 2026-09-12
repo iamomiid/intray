@@ -7,6 +7,7 @@ const TABLES = [
   "drafts",
   "inboxes",
   "webhooks",
+  "usage",
   "otps",
   "api_keys",
   "accounts",

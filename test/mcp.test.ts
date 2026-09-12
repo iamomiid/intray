@@ -53,6 +53,7 @@ const AGENT_TOOLS = [
   "get_inbox",
   "get_message",
   "get_thread",
+  "get_usage",
   "get_webhook",
   "list_drafts",
   "list_inboxes",
@@ -183,14 +184,14 @@ it("signs up over MCP and unlocks the authenticated tool set", async () => {
   expect(created.inbox_id.endsWith("@intray.example")).toBe(true);
   const names = await toolNames(created.api_key);
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(33);
+  expect(names).toHaveLength(34);
 });
 
 it("serves the full tool set to the operator token", async () => {
   const names = await toolNames(OPERATOR_TOKEN);
 
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(33);
+  expect(names).toHaveLength(34);
 
   const seen = payload<{ account: { account_id: string; verified: boolean }; key_id: string }>(
     await callTool("auth_me", {}, OPERATOR_TOKEN),
@@ -500,6 +501,31 @@ it("deletes a thread through the tools and names a message id it cannot find", a
     created.api_key,
   );
   expect(gone.isError).toBe(true);
+});
+
+it("reports usage and its quotas over get_usage", async () => {
+  await callTool("create_inbox", { username: "usage-agent" }, OPERATOR_TOKEN);
+  await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: "usage-agent@intray.example",
+    raw: bytes(plainEml),
+  });
+
+  const usage = payload<{
+    period: string;
+    messages_sent: number;
+    messages_received: number;
+    storage_bytes: number;
+    inboxes: number;
+    limits: Record<string, number | null>;
+  }>(await callTool("get_usage", {}, OPERATOR_TOKEN));
+
+  expect(usage.period).toMatch(/^\d{4}-\d{2}$/);
+  expect(usage.messages_received).toBe(1);
+  expect(usage.messages_sent).toBe(0);
+  expect(usage.storage_bytes).toBeGreaterThan(0);
+  expect(usage.inboxes).toBe(1);
+  expect(usage.limits.inboxes).toBe(10);
 });
 
 it("drafts, edits, schedules and sends over the draft tools", async () => {

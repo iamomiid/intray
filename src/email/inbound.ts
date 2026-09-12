@@ -1,5 +1,6 @@
 import { type ExtractableAttachment, storeAttachmentText } from "../core/attachments";
 import { parseStringArray } from "../core/serialize";
+import { recordReceived, withinInboundQuota } from "../core/usage";
 import { emitEvent } from "../core/webhooks";
 import { insertAttachment } from "../db/attachments";
 import { getInbox } from "../db/inboxes";
@@ -16,6 +17,8 @@ import { resolveThreadId } from "./threading";
 export const REJECT_UNKNOWN_RECIPIENT = "550 no such inbox";
 
 export const REJECT_TOO_LARGE = "552 message too large";
+
+export const REJECT_QUOTA_EXCEEDED = "552 quota exceeded";
 
 export class InboundRejected extends Error {
   readonly reason: string;
@@ -81,6 +84,9 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   const inbox = await getInbox(env.DB, inboxId);
   if (inbox === null) {
     throw new InboundRejected(REJECT_UNKNOWN_RECIPIENT);
+  }
+  if (!(await withinInboundQuota(env, inbox.account_id, input.raw.byteLength))) {
+    throw new InboundRejected(REJECT_QUOTA_EXCEEDED);
   }
 
   const parsed = await parseMime(input.raw);
@@ -173,6 +179,14 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   });
 
   await emitEvent(env, inbox.account_id, "message.received", inbox.inbox_id, messageId);
+  await recordReceived(
+    env.DB,
+    inbox.account_id,
+    stored.reduce(
+      (total, { attachment }) => total + attachment.content.byteLength,
+      input.raw.byteLength,
+    ),
+  );
   await storeAttachmentText(env.DB, extractable);
 
   return { messageId, threadId, inboxId: inbox.inbox_id };

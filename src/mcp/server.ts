@@ -25,8 +25,8 @@ const ONBOARDING_INSTRUCTIONS = [
 
 const AGENT_INSTRUCTIONS = [
   "intray gives this agent real email inboxes. The tools cover the account (auth_me,",
-  "create_api_key), inboxes (list_inboxes, create_inbox, get_inbox, delete_inbox), threads",
-  "(list_threads, get_thread), messages (list_messages, search_messages, get_message,",
+  "create_api_key, get_usage), inboxes (list_inboxes, create_inbox, get_inbox, delete_inbox),",
+  "threads (list_threads, get_thread), messages (list_messages, search_messages, get_message,",
   "wait_for_message, update_message_labels, delete_message, get_attachment), and sending",
   "(send_message, reply_to_message, forward_message). An inbox_id is always the full email",
   "address, never an opaque id, so pass it verbatim. wait_for_message blocks until a message",

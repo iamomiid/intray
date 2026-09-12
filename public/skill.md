@@ -207,6 +207,14 @@ later, so deduplicate on `delivery_id`. `data` is read when the delivery is atte
 the message as it stands then. `wait_for_message` remains the simpler option when you have no
 endpoint to expose.
 
+Check what you have used and what you are allowed. `GET <PUBLIC_URL>/v1/usage`, or MCP
+`get_usage {}`, returns the messages sent and received in the current UTC month, the bytes your
+account has stored, the inboxes it holds, and the quota for each; a `null` limit means unlimited.
+Sending past the sent quota is `quota_exceeded`, so read this before a large batch rather than
+discovering the ceiling mid-run. Mail arriving past the received or storage quota is refused at the
+SMTP transaction with `552 quota exceeded` and never reaches an inbox, so the sender is told and you
+see nothing; deleting messages, threads or inboxes gives the stored bytes back.
+
 ## Limits and rules
 
 - An unverified account may email only its own signup address. Anything else is `message_rejected`.
@@ -222,6 +230,8 @@ endpoint to expose.
 - Signup is rate-limited per IP, and codes are rate-limited per account. A deployment may also
   restrict signup to a fixed list of addresses; anything else is `signup_closed`.
 - An account holds at most 10 webhooks, each on an `https` url; the eleventh is `conflict`.
+- A deployment may cap the messages an account sends or receives in a UTC month and the bytes it
+  stores. Sending past the cap is 429 `quota_exceeded`; `get_usage` shows how close you are.
 - Timestamps are integer Unix milliseconds. Field names are snake_case. `:inbox_id` must be
   URL-encoded in a path.
 
@@ -241,5 +251,5 @@ JSON.
 | 403 | `forbidden`, `message_rejected`, `signup_closed` |
 | 404 | `not_found` |
 | 409 | `conflict`, `inbox_taken` |
-| 429 | `too_many_requests` |
+| 429 | `too_many_requests`, `quota_exceeded` |
 | 500 | `internal_error` |
