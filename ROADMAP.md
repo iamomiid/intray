@@ -9,7 +9,7 @@ route inbound through the per-inbox Email Routing rules, one rule per inbox on t
 domain. Adds `domains(domain, account_id, verified_at)` and drops the reliance on a single
 operator-wide `MAIL_DOMAINS`.
 
-## 3. Pluggable mail providers
+## 2. Pluggable mail providers
 
 Let a deployment run inbound, outbound, or both through a provider other than Cloudflare Email
 Routing and Email Sending: SMTP, Amazon SES, Resend, or any other mail API. Each provider is one
@@ -36,20 +36,20 @@ same `550` and `552` reasons in the response body so the caller can bounce.
 `cloudflare` and instead checks that the chosen provider's secrets are set. Drafts drain
 through the transport. The test suites' `EMAIL` fake becomes a `MailTransport` fake.
 
-## 4. Suppression list and bounce handling
+## 3. Suppression list and bounce handling
 
 Parse the bounce traffic arriving on the `cf-bounce` MX and maintain a per-account suppression list.
 Sends to a suppressed address fail fast with a clear error instead of burning quota. Transports
-from item 3 feed the same list from their own bounce notifications: SES over SNS, Resend over
+from item 2 feed the same list from their own bounce notifications: SES over SNS, Resend over
 its webhooks, SMTP from DSN mail arriving at the inbound adapter.
 
-## 7. Spam scoring and virus scanning on inbound
+## 4. Spam scoring and virus scanning on inbound
 
 Score inbound mail and label or reject accordingly, so an agent is not handed obvious junk.
 
-## 8. Deliverability visibility as MCP tools
+## 5. Deliverability visibility as MCP tools
 
 Expose what an agent currently cannot see about its own sending: the DMARC aggregate reports for
 the mail domain, a reputation summary derived from them and from bounce traffic, and the
-suppression list from item 4. Read-only tools alongside the existing ones, so an agent can find out
+suppression list from item 3. Read-only tools alongside the existing ones, so an agent can find out
 that its mail is being rejected without an operator reading a dashboard for it.
