@@ -165,13 +165,13 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     });
   }
 
-  await storeAttachmentText(env.DB, extractable);
-
   await touchThread(env.DB, threadId, {
     lastMessageAt: createdAt,
     participantsJson,
     subject: parsed.subject,
   });
+
+  await storeAttachmentText(env.DB, extractable);
 
   return { messageId, threadId, inboxId: inbox.inbox_id };
 }

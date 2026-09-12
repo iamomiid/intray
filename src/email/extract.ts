@@ -1,5 +1,4 @@
 import { unzipSync } from "fflate";
-import { extractText as extractPdfText } from "unpdf";
 import { ATTACHMENT_TEXT_MAX_BYTES, ATTACHMENT_TEXT_MAX_INPUT_BYTES } from "../lib/limits";
 
 export type AttachmentTextStatus = "none" | "extracted" | "empty" | "too_large" | "failed";
@@ -85,6 +84,7 @@ function extractDocx(bytes: Uint8Array): string {
 }
 
 async function extractPdf(bytes: Uint8Array): Promise<string> {
+  const { extractText: extractPdfText } = await import("unpdf");
   const result = await extractPdfText(bytes.slice(), { mergePages: true });
   return result.text;
 }

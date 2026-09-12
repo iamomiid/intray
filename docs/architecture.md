@@ -57,7 +57,7 @@ Threading has no subject-based fallback: a reply from a client that drops both `
 
 ### Attachment text
 
-Step 6 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
+Step 7 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
 `extractText(contentType, filename, bytes)` from `src/email/extract.ts` over the bytes already in
 memory and writes the result onto the row with `updateAttachmentText`. PDF goes through `unpdf`,
 pdf.js packaged for serverless runtimes; docx is unzipped with `fflate` and the text runs are pulled
@@ -67,8 +67,13 @@ on a character boundary; whitespace runs are collapsed and paragraph breaks are 
 escapes: a file that cannot be parsed is recorded as `failed` and ingest still succeeds. Outbound
 attachments are not extracted and stay `none`.
 
+Extraction is the last step of ingest, after `touchThread`, so that a heavy document that exhausts
+the handler's CPU budget cannot leave a message row behind a thread that was never touched.
+
 pdf.js detaches the buffer it is handed, so `extractPdf` passes it a copy and the caller's bytes
-stay usable.
+stay usable. `unpdf` is loaded with a dynamic `import` inside `extractPdf` rather than at module
+scope, so the roughly 2.4 MB pdf.js bundle is parsed only on the first PDF and stays off the
+Worker's cold-start path; `fflate` is small enough to stay a static import.
 
 ## Outbound
 
