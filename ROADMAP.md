@@ -2,13 +2,6 @@
 
 Ordered. Each item is additive; v1 data model already reserves the columns the early items need.
 
-## 1. Custom domains per account
-
-Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and
-route inbound through the per-inbox Email Routing rules, one rule per inbox on the account's
-domain. Adds `domains(domain, account_id, verified_at)` and drops the reliance on a single
-operator-wide `MAIL_DOMAINS`.
-
 ## 2. Pluggable mail providers
 
 Let a deployment run inbound, outbound, or both through a provider other than Cloudflare Email

@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import skillMd from "../../public/skill.md";
 import {
+  addDomain,
   addSuppression,
   authenticate,
   batchDeleteMessages,
@@ -11,6 +12,7 @@ import {
   createInvite,
   createOrg,
   createWebhook,
+  deleteDomain,
   deleteDraft,
   deleteInbox,
   deleteMessage,
@@ -26,6 +28,7 @@ import {
   getUsage,
   getWebhook,
   listAudit,
+  listDomains,
   listDrafts,
   listInboxes,
   listInvites,
@@ -51,12 +54,14 @@ import {
   updateThreadLabels,
   updateWebhook,
   verify,
+  verifyDomain,
   waitForMessage,
 } from "../core/index";
 import type { Principal } from "../core/principal";
 import { config, type Env } from "../env";
 import { unauthorized } from "../lib/errors";
 import {
+  addDomainInput,
   attachmentInput,
   batchDeleteInput,
   batchLabelsInput,
@@ -67,12 +72,14 @@ import {
   createOrgInput,
   createSuppressionInput,
   createWebhookInput,
+  domainInput,
   draftInput,
   emptyInput,
   forwardInput,
   inboxInput,
   inviteInput,
   listAuditInput,
+  listDomainsInput,
   listDraftsInput,
   listInboxesInput,
   listMessagesInput,
@@ -574,6 +581,63 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
   );
 }
 
+function registerDomainTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "list_domains",
+    {
+      title: "List domains",
+      description:
+        "List the mail domains this account registered, newest first. These are extra to the" +
+        " deployment's own MAIL_DOMAINS, which every account may already use and which do not" +
+        " appear here.",
+      inputSchema: listDomainsInput,
+    },
+    (args) => run(() => listDomains(env, principal, args)),
+  );
+
+  server.registerTool(
+    "add_domain",
+    {
+      title: "Add domain",
+      description:
+        "Register a domain this account owns so inboxes can be created on it. The domain, or an" +
+        " apex above it, must already be a zone in the deployment's Cloudflare account; anything" +
+        " else is refused. The call onboards the domain for sending, turns Email Routing on and" +
+        " writes the DNS records the zone is missing, then answers with status pending and the" +
+        " records. Call verify_domain until the status turns verified; only then does" +
+        " create_inbox accept the domain.",
+      inputSchema: addDomainInput,
+    },
+    (args) => run(() => addDomain(env, principal, args)),
+  );
+
+  server.registerTool(
+    "verify_domain",
+    {
+      title: "Verify domain",
+      description:
+        "Re-read what Cloudflare reports for the domain's sending and routing DNS. Both clean" +
+        " turns the domain verified; anything outstanding leaves it pending and comes back in" +
+        " records with present false. A domain whose status is failed is retried by this call.",
+      inputSchema: domainInput,
+    },
+    (args) => run(() => verifyDomain(env, principal, args.domain)),
+  );
+
+  server.registerTool(
+    "remove_domain",
+    {
+      title: "Remove domain",
+      description:
+        "Remove a registered domain. Delete its inboxes first: the call is refused while any" +
+        " inbox is on it. It then deletes the DNS records this domain wrote and the Email" +
+        " Sending subdomain.",
+      inputSchema: domainInput,
+    },
+    (args) => run(() => deleteDomain(env, principal, args.domain)),
+  );
+}
+
 function registerSuppressionTools(server: McpServer, env: Env, principal: Principal): void {
   server.registerTool(
     "list_suppressions",
@@ -752,6 +816,7 @@ export function registerTools(server: McpServer, env: Env, principal: Principal 
   registerSendingTools(server, env, principal);
   registerDraftTools(server, env, principal);
   registerWebhookTools(server, env, principal);
+  registerDomainTools(server, env, principal);
   registerSuppressionTools(server, env, principal);
   registerOrgTools(server, env, principal);
 }

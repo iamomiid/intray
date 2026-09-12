@@ -31,3 +31,5 @@ export const WEBHOOK_SECRET_BYTES = 32;
 export const WEBHOOK_TIMEOUT_MS = 10_000;
 
 export const SUPPRESSION_DETAIL_MAX_CHARS = 512;
+
+export const DOMAIN_NAME_MAX_CHARS = 253;

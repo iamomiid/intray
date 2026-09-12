@@ -112,6 +112,19 @@ export interface UsageRow {
   updated_at: number;
 }
 
+export interface DomainRow {
+  domain: string;
+  account_id: string;
+  zone_id: string;
+  sending_tag: string | null;
+  status: string;
+  records_json: string;
+  error: string | null;
+  verified_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface SuppressionRow {
   account_id: string;
   address: string;

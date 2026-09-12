@@ -21,7 +21,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
 | schemas | done | `src/schemas/`, one module per resource plus `objects.ts`; the MCP tools' `inputSchema` and the OpenAPI document both read from it, and `test/schemas.test.ts` parses a serialized row of each kind against its schema |
 | openapi | done | `GET /openapi.json`, built in `src/http/openapi.ts` from a route table and `z.toJSONSchema`, served by `src/http/routes/openapi.ts`; `test/openapi.test.ts` compares the document against `app.routes` in both directions |
-| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 48 with one, and 401 with a `WWW-Authenticate` resource pointer for a key that resolves to nothing |
+| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 52 with one, and 401 with a `WWW-Authenticate` resource pointer for a key that resolves to nothing |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
 | batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
@@ -29,6 +29,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | drafts | done | `src/core/drafts.ts`, `migrations/0004_drafts.sql`; create, list, get, update, delete, send now, and a one-minute cron trigger draining due scheduled drafts through `sendMessage` and `replyToMessage` |
 | orgs | done | `src/core/orgs.ts`, `src/core/audit.ts`, `migrations/0006_company.sql`; `ADMIN_SECRET` bootstraps one org, invites are accepted through signup, admins provision inboxes to members, API keys take `inbox:` scopes enforced in core, and an append-only audit log covers the admin actions |
 | suppressions | done | `src/core/suppressions.ts`, `src/email/bounce.ts`, `migrations/0010_suppressions.sql`; delivery status notifications arriving on an inbox are labelled `bounce` and write a per-account suppression row, `GET/POST /v1/suppressions` and `DELETE /v1/suppressions/:address` read and edit the list, and `sendMessage`, `replyToMessage` and `forwardMessage` fail 400 `recipient_suppressed` before the send |
+| domains | done | `src/core/domains.ts`, `src/db/domains.ts`, `migrations/0012_domains.sql`; an account registers a domain that is a zone in the deployment's Cloudflare account or a subdomain of one, `addDomain` onboards it for sending, enables Email Routing and writes the missing DNS, `verifyDomain` polls and retries, and an inbox on a verified domain always gets its own routing rule on that domain's zone |
 | webhooks | done | `src/core/webhooks.ts`; per-account https endpoints for `message.received`, `message.sent` and `message.bounced`, HMAC-SHA256 signed, delivered and retried through the `intray-webhooks` queue |
 | wait | done | `src/waiter.ts`; `InboxWaiter` is a Durable Object per inbox holding parked `wait` calls and no storage, notified by `ingestInbound` after the row is committed, with the 2-second D1 poll kept as the fallback when `INBOX_WAITER` is unbound or the RPC throws |
 | usage | done | `src/core/usage.ts`, `src/db/usage.ts`, `migrations/0007_usage.sql`; upsert counters for messages sent, messages received and stored bytes, read through `GET /v1/usage` or `get_usage`, enforced as `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` |
@@ -49,6 +50,18 @@ What is built, and what a contributor needs to know before touching it. Design r
   slower than a D1 write and both fail with 503 `routing_unavailable` while the API is unreachable.
   Nothing retries; the setup's reconcile is what repairs a create that got the rule but not the row
   or the other way round.
+- A custom domain must be a zone in the deployment's Cloudflare account, or a subdomain of one. A
+  domain the account does not hold in Cloudflare is 400 `bad_request`; there is no flow for a zone
+  hosted elsewhere, because every step of onboarding is a zone-level write.
+- Removing a custom domain requires that no inbox is on it. `DELETE /v1/domains/:domain` answers
+  409 `conflict` rather than cascading, so the inboxes and their mail are never deleted by a domain
+  call.
+- DNS propagation is the zone's business. `addDomain` writes the records and `verifyDomain` reports
+  what Cloudflare currently sees; neither waits, so a domain can sit `pending` for as long as the
+  zone takes and an agent has to poll `verify_domain`.
+- Every `/v1/domains` call reaches the Cloudflare API, so all of them fail 503
+  `routing_unavailable` while it is unreachable or `ROUTING_API_TOKEN` is unset, and the token has
+  to be scoped to all zones in the account rather than to one.
 - OAuth issues no refresh token and the access token does not expire. It is an `api_keys` row, so
   ending a connection means revoking the key through `DELETE /v1/api-keys/:key_id`; a client that
   loses its token runs the flow again.

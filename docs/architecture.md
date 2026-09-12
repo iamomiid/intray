@@ -153,7 +153,8 @@ catch-all claims the whole zone, so no other address on the domain can be held b
 action naming `WORKER_NAME`. The domain then accepts mail only for addresses that exist, and the
 operator's own addresses on the same zone keep their own rules. `src/lib/cloudflare.ts` is the
 client — `fetch` against `/zones/{zone}/email/routing/rules`, mapping Cloudflare's error envelope
-onto an `AppError` — and `src/core/routing.ts` is the only caller. It is deliberately separate from
+onto an `AppError` — and `src/core/routing.ts` is the only place a client is built, for the zone
+client custom domains use as well. It is deliberately separate from
 `scripts/lib/cloudflare.ts`, which is the Node-side client the setup uses.
 
 `createInbox` creates the rule **before** the row and stores its id in `inboxes.routing_rule_id`, so
@@ -178,6 +179,55 @@ deployment creates the rules first and disables the catch-all last, so no addres
 between, and because that changes how the domain's mail flows it goes through the same consent flow
 as the other irreversible steps. Switching back re-enables the catch-all and leaves the rules in
 place, which is why the switch is described as reversible.
+
+### Custom domains
+
+An account registers a domain of its own with `POST /v1/domains` and, once it verifies, creates
+inboxes on it. `src/core/domains.ts` is the whole of it; `src/lib/cloudflare.ts` gains a second
+client, `zoneClient`, alongside the routing one — same token, same error mapping, no shared state.
+
+**A custom domain must be a zone in the operator's Cloudflare account, or a subdomain of one.**
+`findZone` walks the same candidates the setup's `zoneCandidates` walks, from the full name up to
+the registrable apex, and the first `GET /zones?name=` that answers with a zone wins; nothing else
+is supported and a domain whose zone the account does not hold is 400 `bad_request` saying so. The
+reason is that everything the feature does is a zone-level write — Email Sending onboarding, the
+Email Routing enable, the SPF, DKIM and MX records, and the per-inbox routing rule — and Cloudflare
+will only do those on a zone the account holds. A design where the agent's own registrar keeps the
+zone would mean handing back records for a human to enter by hand, waiting on DNS the deployment
+cannot see, and no way to reach `verified` on the deployment's own evidence. Delegating a subdomain
+to the operator's account is the shape that makes that work, so that is the shape the API asks for.
+
+`addDomain` resolves the zone, onboards the domain for sending, enables Email Routing on the zone
+when it is off, reads the DNS Cloudflare wants from both the sending status and the routing status,
+and writes each record the zone is missing. It stores the row `pending` with those records and the
+sending tag. Records are written one by one rather than through Cloudflare's own `POST .../dns`
+fixer so that the row knows exactly what it created and `deleteDomain` can take it back out again;
+a record whose content already matches is left alone, and an existing SPF, DMARC or CNAME with the
+same name is updated in place rather than duplicated. Every Cloudflare failure lands the row as
+`failed` with the message instead of unwinding, because the row is the only record of the attempt
+and an agent that cannot see the failure cannot fix it.
+
+`verifyDomain` re-runs the same sequence, which is idempotent end to end, and settles on what
+Cloudflare reports: both statuses clean turns the domain `verified` with `verified_at`, anything
+outstanding leaves it `pending` with the current records and their `present` flags. It is therefore
+also the retry for a `failed` domain, so there is one call to poll and no second repair endpoint.
+
+`createInbox` accepts a domain that is `verified` and owned by the calling account on top of
+`MAIL_DOMAINS`, and on a custom domain the inbox always gets its own routing rule on that domain's
+zone whatever `ROUTING_MODE` says: the deployment's catch-all lives on a different zone and cannot
+reach the address, so a rule is the only route there is. `createRoutingRule` and `deleteRoutingRule`
+take a zone id for that reason, defaulting to `CLOUDFLARE_ZONE_ID` and the mode when it is null.
+`deleteInbox` looks the zone up from the domain row. `deleteDomain` is refused while any inbox is
+on the domain, so an inbox is never stranded, and otherwise removes the records the row created,
+the sending subdomain and the row.
+
+Inbound does not change. Mail for a custom domain arrives at the same `email()` handler through the
+per-inbox rule and is ingested by `inbox_id` like any other, so nothing in `src/email/` knows a
+custom domain exists.
+
+The token is `ROUTING_API_TOKEN`, reused rather than added to. For custom domains it must be scoped
+to all zones in the account with Zone Read, DNS Edit, Email Routing Rules Edit and Email Routing
+Addresses Edit; a missing token is 503 `routing_unavailable`, exactly as `per_inbox` mode answers.
 
 ### Bounces
 
@@ -490,7 +540,7 @@ unauthenticated tool set that `docs/api.md` promises.
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, forty-eight with one.
+registered depends on the result: three onboarding tools without a live key, fifty-two with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -541,6 +591,7 @@ numbered migration.
 | `usage` | `(account_id, period)` | `period` is a `YYYY-MM` UTC month or the literal `all`; `messages_sent`, `messages_received`, `storage_bytes` |
 | `suppressions` | `(account_id, address)` | `reason` (`hard_bounce`, `soft_bounce`, `manual`, `provider`), `source` (`dsn`, `api`, `provider`), `detail`, `message_id` of the bounce report, `created_at`, `last_seen_at`; indexed on `(account_id, created_at)` |
 | `webhooks` | `webhook_id` (`whk_`) | `account_id`, `url`, `secret`, `events_json`, `description`, `active` |
+| `domains` | `domain` (the name) | `account_id`, `zone_id`, `sending_tag`, `status` (`pending`, `verified`, `failed`), `records_json`, `error`, `verified_at`; indexed on `(account_id, created_at)` |
 | `orgs` | `org_id` (`org_`) | `name`; one row per deployment for now |
 | `memberships` | `(org_id, account_id)` | `role` (`admin` or `member`), indexed on `account_id` |
 | `invites` | `invite_id` (`inv_`) | `org_id`, `email`, `role`, `invited_by`, `accepted_at` null while open; indexed on `(org_id, email)` |

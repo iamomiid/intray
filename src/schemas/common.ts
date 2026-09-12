@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DOMAIN_STATUSES } from "../core/domains";
 import { SUPPRESSION_REASONS, SUPPRESSION_SOURCES } from "../core/suppressions";
 
 export const inboxId = z.string().min(1);
@@ -14,6 +15,8 @@ export const webhookId = z.string().min(1);
 export const attachmentId = z.string().min(1);
 
 export const suppressedAddress = z.string().min(1);
+
+export const domainName = z.string().min(1);
 
 export const keyId = z.string().min(1);
 
@@ -55,6 +58,8 @@ export const attachmentTextStatus = z.enum(["none", "extracted", "empty", "too_l
 export const suppressionReason = z.enum(SUPPRESSION_REASONS);
 
 export const suppressionSource = z.enum(SUPPRESSION_SOURCES);
+
+export const domainStatus = z.enum(DOMAIN_STATUSES);
 
 export const orgRole = z.enum(["admin", "member"]);
 

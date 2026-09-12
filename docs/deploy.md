@@ -294,6 +294,37 @@ answers 409 `conflict` with `inbox limit reached`. And whether a `literal` rule 
 subaddressed mail (`desk-agent+invoices@` to the `desk-agent@` rule) is unverified — until it is,
 keep a deployment that relies on subaddressing in `catch_all` mode.
 
+## Custom domains per account
+
+An account can register a mail domain of its own through `POST /v1/domains` or the `add_domain`
+tool, and create inboxes on it once it verifies. Two things have to be true for that to work.
+
+1. The domain, or an apex above it, is already a zone in this deployment's Cloudflare account.
+   Nothing else is supported: every step is a zone-level write. A user who owns a domain elsewhere
+   delegates a subdomain of it to this account first, adds that subdomain as a zone, and registers
+   it.
+2. `ROUTING_API_TOKEN` is set and scoped to **all zones in the account**, with:
+
+   - Zone — Zone — Read
+   - Zone — DNS — Edit
+   - Zone — Email Routing Rules — Edit
+   - Account — Email Routing Addresses — Edit
+
+   The zone-scoped, single-permission token that `per_inbox` mode alone needs is not enough: a
+   custom domain sits on a zone the operator did not name in the config, so the token has to reach
+   every zone. Set it with `pnpm wrangler secret put ROUTING_API_TOKEN`. Without it every
+   `/v1/domains` call answers 503 `routing_unavailable`.
+
+Nothing else is required of the operator. `addDomain` runs Email Sending onboarding for the domain,
+turns Email Routing on for the zone when it is off, and writes the SPF, DKIM and MX records the
+zone is missing; the agent then polls `verify_domain` until the status is `verified`. An inbox on a
+custom domain always gets its own Email Routing rule on that domain's zone, whatever `ROUTING_MODE`
+says, because this deployment's catch-all is on a different zone. `DOMAIN_LIMIT`, default `5`, caps
+how many domains one account may register.
+
+Removing a domain requires that its inboxes are gone first; the call then deletes the DNS records
+it wrote and the Email Sending subdomain, and leaves the zone in place.
+
 ## DMARC reports
 
 Optional, and nothing else depends on it. Cloudflare's DMARC Management appends a Cloudflare-owned

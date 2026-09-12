@@ -50,6 +50,7 @@ key lookup.
 | --- | --- |
 | `MAIL_DOMAINS` | comma-separated mail domains, no spaces. The first is the default for new inboxes |
 | `INBOX_LIMIT` | per-account inbox cap, as a string. Default `10` |
+| `DOMAIN_LIMIT` | per-account cap on registered custom domains, as a string. Default `5` |
 | `PUBLIC_URL` | deployed origin, no trailing slash |
 | `ALLOWED_SIGNUP_EMAILS` | comma-separated allowlist of signup addresses. Empty or absent leaves signup open; otherwise any other address gets 403 `signup_closed` before any rate limit or write |
 | `QUOTA_MESSAGES_SENT_PER_MONTH` | per-account cap on messages sent in a UTC month, as a string. Empty, absent or `0` is unlimited |
@@ -60,7 +61,7 @@ key lookup.
 | `ROUTING_MODE` | `catch_all`, the default, or `per_inbox`. In `per_inbox` every inbox gets its own Email Routing rule and the zone catch-all is off, so the domain accepts mail only for addresses that exist |
 | `CLOUDFLARE_ZONE_ID` | the zone the routing rules are written to. Only read in `per_inbox` mode |
 | `WORKER_NAME` | the script name a routing rule's worker action targets. Default `intray` |
-| `ROUTING_API_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put ROUTING_API_TOKEN` or by the setup when `CLOUDFLARE_API_TOKEN` is in the environment. A zone-scoped API token with Email Routing Rules Edit. Only read in `per_inbox` mode, where inbox create and delete fail 503 `routing_unavailable` without it. Put it in `.dev.vars` for `pnpm dev` |
+| `ROUTING_API_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put ROUTING_API_TOKEN` or by the setup when `CLOUDFLARE_API_TOKEN` is in the environment. A zone-scoped API token with Email Routing Rules Edit is enough for `per_inbox` mode alone; the custom-domain endpoints need it scoped to **all zones in the account** with Zone Read, DNS Edit, Email Routing Rules Edit and Email Routing Addresses Edit. Read in `per_inbox` mode and by every `/v1/domains` call; both fail 503 `routing_unavailable` without it. Put it in `.dev.vars` for `pnpm dev` |
 | `OPERATOR_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put OPERATOR_TOKEN` or `pnpm run setup --operator-token`, never in `wrangler.jsonc`. Authenticates the operator principal. Absent, empty, or shorter than 32 characters disables it. Put it in `.dev.vars` for `pnpm dev` |
 | `ADMIN_SECRET` | a **secret**, not a var. Set with `pnpm wrangler secret put ADMIN_SECRET`, never in `wrangler.jsonc`. Presented as `x-admin-secret` on `POST /v1/orgs` to bootstrap company mode, and used nowhere else. Absent, empty, or shorter than 32 characters disables the bootstrap. Put it in `.dev.vars` for `pnpm dev` |
 
@@ -186,7 +187,7 @@ key id. The log is append-only; nothing updates or deletes a row.
 `display_name` is the From name on every message the inbox sends, so set it to something a human
 recipient recognizes; left null the From header carries the bare address. `routing` is `rule` when
 the inbox has its own Email Routing rule and `catch_all` when mail reaches it through the zone
-catch-all.
+catch-all. An inbox on a custom domain is always `rule`, whatever `ROUTING_MODE` says.
 
 ### thread
 
@@ -245,6 +246,17 @@ be read with `GET /v1/inboxes/:inbox_id/messages/:message_id`. `created_at` is w
 first landed on the list and `last_seen_at` when it last bounced or was last re-suppressed. The
 list belongs to the account, not to an inbox: a bounce for one inbox stops every inbox on the
 account from writing to that address.
+
+### domain
+
+`domain`, `status`, `records`, `error`, `verified_at`, `created_at`, `updated_at`.
+
+`status` is `pending` while Cloudflare still reports a record missing, `verified` once both the
+sending and the routing checks come back clean, and `failed` when the last Cloudflare call errored,
+with the reason in `error`. `records` is the DNS the domain needs as Cloudflare last reported it:
+each entry is `{type, name, content, priority?, present}`, and `present` is false for a record the
+zone does not carry yet. `verified_at` is null until the domain verifies. The object never carries
+the zone id or the sending tag; they are deployment detail.
 
 ### webhook
 
@@ -362,7 +374,9 @@ quota rather than the admin's. Members keep creating their own inboxes under the
 | GET | `/inboxes/:inbox_id` | — | inbox |
 | DELETE | `/inboxes/:inbox_id` | — | `{deleted: true}` |
 
-`domain` must be one of `MAIL_DOMAINS` and defaults to the first. Creation fails with `conflict`
+`domain` must be one of `MAIL_DOMAINS`, or a domain the account registered and verified through
+`/v1/domains`, and defaults to the first of `MAIL_DOMAINS`. A domain that is registered but not yet
+`verified` is 400 `bad_request`, as is another account's domain. Creation fails with `conflict`
 when the account is at `INBOX_LIMIT`, and with `inbox_taken` when the address exists. In
 `per_inbox` mode the Email Routing rule is created before the row and deleted before the row, so a
 create fails with `routing_unavailable` rather than handing back an inbox no mail can reach, and a
@@ -647,6 +661,38 @@ inbox gets 403 `forbidden`, because the list belongs to the account.
 A send, reply, forward or draft send naming a suppressed address fails with 400
 `recipient_suppressed` before anything is sent, unless the only entry for it is a `soft_bounce`.
 
+### Domains
+
+| Method | Path | Body / query | Returns |
+| --- | --- | --- | --- |
+| GET | `/domains` | `limit`, `page_token` | `{items, next_page_token}` of domain, newest first |
+| POST | `/domains` | `{domain}` | domain |
+| GET | `/domains/:domain` | — | domain |
+| POST | `/domains/:domain/verify` | — | domain |
+| DELETE | `/domains/:domain` | — | `{deleted: true}` |
+
+A custom domain must already be a zone in the deployment's Cloudflare account, or a subdomain of
+one; anything else is 400 `bad_request` naming the zone requirement. `POST /domains` lowercases the
+name, refuses one of `MAIL_DOMAINS` or a name any account already registered with 409 `conflict`,
+refuses a name over `DOMAIN_LIMIT` the same way, then runs Email Sending onboarding for the domain,
+turns Email Routing on for the zone if it is off, and writes the DNS records Cloudflare hands back
+that the zone is missing. The row is stored `pending` with those records. Any Cloudflare failure
+stores the row `failed` with the message rather than throwing the work away.
+
+`POST /domains/:domain/verify` re-runs the same onboarding, which is idempotent, and re-reads what
+Cloudflare reports: both checks clean turns the domain `verified` and stamps `verified_at`;
+anything outstanding leaves it `pending` with the current `records`. It is also the retry for a
+`failed` domain.
+
+`DELETE /domains/:domain` is 409 `conflict` while any inbox is on the domain. Otherwise it deletes
+the DNS records this domain wrote, removes the Email Sending subdomain and drops the row; the zone
+itself is left alone.
+
+All five need a full-scope key and see only the calling account's domains; a scoped key gets 403
+`forbidden` and another account's domain is 404 `not_found`. Without `ROUTING_API_TOKEN` every call
+that reaches Cloudflare is 503 `routing_unavailable`. Inbound needs no change for a custom domain:
+mail arrives at the same `email()` handler through the per-inbox rule.
+
 ### Bounces
 
 An inbound message that is a delivery status notification is stored like any other message and
@@ -856,6 +902,10 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `get_webhook` | `webhook_id` |
 | `update_webhook` | `webhook_id`, `url?`, `events?`, `description?`, `active?` |
 | `delete_webhook` | `webhook_id` |
+| `list_domains` | `limit?`, `page_token?` |
+| `add_domain` | `domain` |
+| `verify_domain` | `domain` |
+| `remove_domain` | `domain` |
 
 Every tool returns its result as JSON in a single text content block. An `AppError` becomes a tool
 error (`isError: true`) whose text is `{"error":{"code":...,"message":...}}`, matching the REST

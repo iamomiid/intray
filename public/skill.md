@@ -117,6 +117,14 @@ Always set `display_name`. It becomes the From name on everything the inbox send
 `signups@agents.example.com` with no name behind it is treated as less trustworthy by receiving
 servers and by the humans reading it.
 
+Use your own domain instead of the deployment's. `add_domain {"domain":"agents.example.com"}`
+registers a domain the deployment's Cloudflare account holds as a zone, or holds the apex of, and
+answers with `status` `pending` and the DNS records it wrote; anything else is refused, so delegate
+a subdomain to that account first. Poll `verify_domain {"domain":"agents.example.com"}` until
+`status` is `verified` — DNS takes as long as the zone takes — and then pass
+`{"domain":"agents.example.com"}` to `create_inbox`. `list_domains` shows what you registered and
+`remove_domain` takes one back once its inboxes are gone.
+
 Wait for a verification email and pull the code out of it. Note the current time first, trigger the
 email, then block on the inbox. `wait_for_message` returns as soon as a message newer than `since`
 lands, and returns an empty `items` array when the timeout expires.
@@ -275,7 +283,7 @@ you the reports themselves.
   exist, `list_inboxes` shows only the scoped ones, and creating inboxes, keys, webhooks or orgs is
   `forbidden`. Hand a scoped key to a subagent that should only read one channel.
 - An account may hold a limited number of inboxes; creating one past the limit is `conflict`.
-  Creating an address that already exists is `inbox_taken`.
+  Creating an address that already exists is `inbox_taken`. The same holds for registered domains.
 - `wait` blocks at most 55 seconds and defaults to 30. `since` defaults to the moment of the call.
 - Lists default to `limit=25` and cap at 100. Pass the previous `next_page_token` back as
   `page_token`; a `null` token means the end.
