@@ -37,6 +37,8 @@ const messageId = z.string().min(1);
 
 const recipients = z.union([z.string(), z.array(z.string())]);
 
+const senderAddress = z.string().optional();
+
 const attachments = z.array(
   z.object({
     filename: z.string(),
@@ -324,9 +326,10 @@ function registerSendingTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Send message",
       description:
-        "Send a new message from an inbox. to, cc, and bcc take a string or an array; at most 50 recipients and 32 attachments, and the whole message must stay under 5 MiB.",
+        "Send a new message from an inbox. to, cc, and bcc take a string or an array; at most 50 recipients and 32 attachments, and the whole message must stay under 5 MiB. from may be the inbox address with a +tag, which labels this message and every reply that comes back to it.",
       inputSchema: z.object({
         inbox_id: inboxId,
+        from: senderAddress,
         to: recipients,
         cc: recipients.optional(),
         bcc: recipients.optional(),
@@ -345,10 +348,11 @@ function registerSendingTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Reply to message",
       description:
-        "Reply in the parent's thread. reply_all merges the parent's from, to, and cc minus the inbox's own address.",
+        "Reply in the parent's thread. reply_all merges the parent's from, to, and cc minus the inbox's own address. from may be the inbox address with a +tag, which labels this message and every reply that comes back to it.",
       inputSchema: z.object({
         inbox_id: inboxId,
         message_id: messageId,
+        from: senderAddress,
         text: z.string().optional(),
         html: z.string().optional(),
         reply_all: z.boolean().optional(),
@@ -362,10 +366,12 @@ function registerSendingTools(server: McpServer, env: Env, principal: Principal)
     "forward_message",
     {
       title: "Forward message",
-      description: "Forward a message with its attachments and the original quoted below text.",
+      description:
+        "Forward a message with its attachments and the original quoted below text. from may be the inbox address with a +tag, which labels this message and every reply that comes back to it.",
       inputSchema: z.object({
         inbox_id: inboxId,
         message_id: messageId,
+        from: senderAddress,
         to: recipients,
         cc: recipients.optional(),
         bcc: recipients.optional(),

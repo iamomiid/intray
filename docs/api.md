@@ -125,7 +125,9 @@ shape), `reply_to`, `subject`, `text`, `html`, `preview`, `labels`, `size`, `has
 
 ## REST endpoints
 
-Base path `/v1`. `:inbox_id` is a full email address and must be URL-encoded in the path.
+Base path `/v1`. `:inbox_id` is a full email address and must be URL-encoded in the path. A `+tag`
+in it is ignored when the inbox is resolved, so `desk-agent%2Binvoices%40agents.example.com` and
+`desk-agent%40agents.example.com` address the same inbox.
 
 ### Agent and auth
 
@@ -201,13 +203,22 @@ seconds and returns an empty `items` array on timeout.
 
 Inbound messages are stored with labels `["received","unread"]`, outbound with `["sent"]`.
 
+Subaddressing adds one more label automatically. Mail to `desk-agent+invoices@agents.example.com`
+lands in the `desk-agent@agents.example.com` inbox with labels `["received","unread","invoices"]`,
+and a message sent with a subaddressed `from` is stored with `["sent","invoices"]`. The tag is taken
+from the envelope recipient, lowercased and trimmed, as the part after the first `+` in the local
+part. A tag that could not be set by `PATCH .../messages/:message_id` — empty, or longer than 64
+characters — is dropped and the message is stored with the default labels; it is never a reason to
+reject mail. Manual labels are unaffected: `PATCH .../messages/:message_id` replaces the whole set,
+tag label included.
+
 ### Sending
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
-| POST | `/inboxes/:inbox_id/messages/send` | `{to, cc?, bcc?, subject, text?, html?, reply_to?, headers?, attachments?}` | message |
-| POST | `/inboxes/:inbox_id/messages/:message_id/reply` | `{text?, html?, reply_all?, attachments?}` | message |
-| POST | `/inboxes/:inbox_id/messages/:message_id/forward` | `{to, cc?, bcc?, text?}` | message |
+| POST | `/inboxes/:inbox_id/messages/send` | `{to, cc?, bcc?, subject, text?, html?, from?, reply_to?, headers?, attachments?}` | message |
+| POST | `/inboxes/:inbox_id/messages/:message_id/reply` | `{text?, html?, from?, reply_all?, attachments?}` | message |
+| POST | `/inboxes/:inbox_id/messages/:message_id/forward` | `{to, cc?, bcc?, from?, text?}` | message |
 
 `to`, `cc`, and `bcc` accept a string or an array of strings. At least one recipient is required, at
 most 50 across all three. `attachments` are `{filename, content_type, content}` with `content`
@@ -217,6 +228,15 @@ base64-encoded; at most 32, and the whole message must stay under 5 MiB.
 is not already, and stays in the parent's thread. `reply_all` merges the parent's `from`, `to`, and
 `cc` minus the inbox's own address. `forward` prefixes `Fwd:`, quotes the original, and carries its
 attachments.
+
+`from` defaults to the inbox address. It may only be the inbox's own address, optionally
+subaddressed: for inbox `desk-agent@agents.example.com`, both `desk-agent@agents.example.com` and
+`desk-agent+invoices@agents.example.com` are accepted and anything else answers 400
+`invalid_address`. The comparison is made after normalization, so case and the tag do not matter.
+With a tag, the From header on the wire carries the subaddressed address under the inbox's
+`display_name`, the stored row's `from` is the subaddressed address, and the row is labelled
+`["sent", tag]`. Replies then arrive back at the subaddressed address and pick the same label up on
+the way in. `reply_to` is separate and unaffected.
 
 The outbound row is stored with `rfc_message_id` set to the `messageId` returned by the send.
 
@@ -268,9 +288,9 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `search_messages` | `inbox_id`, `q`, `limit?`, `page_token?` |
 | `get_message` | `inbox_id`, `message_id` |
 | `wait_for_message` | `inbox_id`, `since?`, `timeout?` |
-| `send_message` | `inbox_id`, `to`, `cc?`, `bcc?`, `subject`, `text?`, `html?`, `reply_to?`, `attachments?` |
-| `reply_to_message` | `inbox_id`, `message_id`, `text?`, `html?`, `reply_all?`, `attachments?` |
-| `forward_message` | `inbox_id`, `message_id`, `to`, `cc?`, `bcc?`, `text?` |
+| `send_message` | `inbox_id`, `to`, `cc?`, `bcc?`, `subject`, `text?`, `html?`, `from?`, `reply_to?`, `attachments?` |
+| `reply_to_message` | `inbox_id`, `message_id`, `text?`, `html?`, `from?`, `reply_all?`, `attachments?` |
+| `forward_message` | `inbox_id`, `message_id`, `to`, `cc?`, `bcc?`, `from?`, `text?` |
 | `update_message_labels` | `inbox_id`, `message_id`, `labels` |
 | `delete_message` | `inbox_id`, `message_id` |
 | `get_attachment` | `inbox_id`, `message_id`, `attachment_id` |

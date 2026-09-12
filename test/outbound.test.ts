@@ -209,6 +209,117 @@ it("threads an inbound reply to a sent message back into the same thread", async
   expect(thread?.message_count).toBe(3);
 });
 
+it("sends from a subaddressed own address and labels the row with the tag", async () => {
+  const message = await sendMessage(outbox, principal, INBOX_ID, {
+    from: "Agent+Invoices@Intray.Example",
+    to: "bob@example.com",
+    subject: "Invoice 42",
+    text: "Attached.",
+  });
+
+  const builder = calls[0];
+  expect(builder?.from).toEqual({ name: "Agent", email: "agent+invoices@intray.example" });
+
+  expect(message.labels).toEqual(["sent", "invoices"]);
+  expect(message.from).toEqual({ address: "agent+invoices@intray.example", name: "Agent" });
+
+  const row = await getMessage(env.DB, INBOX_ID, message.message_id);
+  expect(row?.inbox_id).toBe(INBOX_ID);
+  expect(row?.from_addr).toBe("agent+invoices@intray.example");
+});
+
+it("leaves the From header and labels alone for an untagged from", async () => {
+  const message = await sendMessage(outbox, principal, INBOX_ID, {
+    from: INBOX_ID,
+    to: "bob@example.com",
+    subject: "Plain",
+    text: "No tag.",
+  });
+
+  expect(calls[0]?.from).toEqual({ name: "Agent", email: INBOX_ID });
+  expect(message.labels).toEqual(["sent"]);
+  expect(message.from).toEqual({ address: INBOX_ID, name: "Agent" });
+});
+
+it("keeps the subaddressed From but drops a tag that cannot be a label", async () => {
+  const tag = "x".repeat(65);
+  const message = await sendMessage(outbox, principal, INBOX_ID, {
+    from: `agent+${tag}@intray.example`,
+    to: "bob@example.com",
+    subject: "Long tag",
+    text: "Still sent.",
+  });
+
+  expect(calls[0]?.from).toEqual({ name: "Agent", email: `agent+${tag}@intray.example` });
+  expect(message.labels).toEqual(["sent"]);
+});
+
+it("refuses a from that is not the inbox address", async () => {
+  await rejectsWith(
+    sendMessage(outbox, principal, INBOX_ID, {
+      from: "someone-else@intray.example",
+      to: "bob@example.com",
+      subject: "Spoofed",
+      text: "Nope.",
+    }),
+    400,
+    "invalid_address",
+  );
+  expect(calls).toHaveLength(0);
+});
+
+it("replies from a subaddressed address and labels the reply", async () => {
+  const parent = await deliver(plainEml);
+  const reply = await replyToMessage(outbox, principal, INBOX_ID, parent.messageId, {
+    from: "agent+support@intray.example",
+    text: "On it.",
+  });
+
+  expect(calls[0]?.from).toEqual({ name: "Agent", email: "agent+support@intray.example" });
+  expect(reply.labels).toEqual(["sent", "support"]);
+  expect(reply.thread_id).toBe(parent.threadId);
+});
+
+it("labels an inbound reply that comes back to the subaddressed sender", async () => {
+  const sent = await sendMessage(outbox, principal, INBOX_ID, {
+    from: "agent+invoices@intray.example",
+    to: "bob@example.com",
+    subject: "Invoice 42",
+    text: "Attached.",
+  });
+  expect(sent.labels).toEqual(["sent", "invoices"]);
+
+  const back = [
+    "From: Bob Example <bob@example.com>",
+    "To: agent+invoices@intray.example",
+    "Subject: Re: Invoice 42",
+    "Message-ID: <invoice-back-001@example.com>",
+    "In-Reply-To: <out-1@intray.example>",
+    "References: <out-1@intray.example>",
+    "Date: Tue, 08 Sep 2026 17:00:00 +0000",
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Paid.",
+    "",
+  ].join("\n");
+
+  const threaded = await ingestInbound(env, {
+    envelopeFrom: "bob@example.com",
+    envelopeTo: "agent+invoices@intray.example",
+    raw: bytes(back),
+  });
+
+  expect(threaded.inboxId).toBe(INBOX_ID);
+  expect(threaded.threadId).toBe(sent.thread_id);
+
+  const row = await getMessage(env.DB, INBOX_ID, threaded.messageId);
+  expect(JSON.parse(row?.labels_json ?? "[]")).toEqual(["received", "unread", "invoices"]);
+
+  const thread = await getThread(env.DB, INBOX_ID, sent.thread_id);
+  expect(thread?.message_count).toBe(2);
+});
+
 it("carries the parent references forward and excludes the inbox from reply_all", async () => {
   const parent = await ingestInbound(env, {
     envelopeFrom: "alice@example.com",

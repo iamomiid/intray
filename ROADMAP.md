@@ -24,18 +24,6 @@ creation and revocation, and inbox deletion. Per-org sending domains follow item
 Once any org exists, `POST /v1/agent/signup` becomes invite-only and returns 403 for uninvited
 addresses; a deployment with no org keeps open signup, so v1 behavior is the zero-org case.
 
-## 2. Subaddressing and automatic labels
-
-Manual labels already exist (`update_message_labels`, `messages.labels_json`). Add the automatic
-side: capture the `+tag` on an inbound recipient address and apply it as a label on ingest.
-`normalizeAddress` (`src/lib/address.ts`) already strips `+tag` to resolve the inbox; keep that
-resolution and additionally record the tag, so mail to `desk-agent+invoices@agents.example.com`
-still lands in the `desk-agent` inbox but arrives pre-labeled `invoices`. Extend `send_message` and
-`reply_to_message` to accept a subaddressed `from` so an agent can label its own outbound mail the
-same way. Manual labeling stays exactly as it is; subaddressing is a second, address-driven way to
-reach the same `labels_json` column, so a human can hand an agent `desk-agent+support@...` as a
-ready-filtered channel without the agent calling `update_message_labels` after the fact.
-
 ## 3. Webhooks
 
 Per-account endpoints receiving `message.received` and `message.sent`. HMAC-SHA256 signature over
@@ -88,7 +76,7 @@ disables the catch-all, which changes how the domain's mail flows and so is aske
 Worker's own `550 no such inbox` stays as the backstop for `catch_all` mode and for a stale rule.
 
 Before the catch-all can go, verify that a `literal` rule delivers subaddressed mail
-(`desk-agent+invoices@`) to the `desk-agent@` rule. If it does not, item 2 is limited to
+(`desk-agent+invoices@`) to the `desk-agent@` rule. If it does not, subaddressing is limited to
 `catch_all` mode until it does.
 
 ## 9. Pluggable mail providers
