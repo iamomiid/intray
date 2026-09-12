@@ -1,4 +1,5 @@
 import { getAccountById } from "../db/accounts";
+import { getInboxForAccount } from "../db/inboxes";
 import {
   getApiKeyByHash,
   insertApiKey,
@@ -6,26 +7,22 @@ import {
   revokeApiKey as revokeApiKeyRow,
 } from "../db/keys";
 import type { Env } from "../env";
-import { notFound } from "../lib/errors";
+import { badRequest, notFound } from "../lib/errors";
 import { constantTimeEqual, generateApiKey, sha256Hex } from "../lib/hash";
 import { newId } from "../lib/ids";
 import type { Page } from "../lib/pagination";
 import { now } from "../lib/time";
+import { warnOnce } from "../lib/warn";
+import { recordAccountAudit } from "./audit";
 import { ensureOperatorAccount, OPERATOR_KEY_ID, OPERATOR_TOKEN_MIN_LENGTH } from "./operator";
-import type { Principal } from "./principal";
-import { type ApiKeyObject, toApiKey } from "./serialize";
-
-const DEFAULT_SCOPES_JSON = JSON.stringify(["*"]);
-
-const emittedWarnings = new Set<string>();
-
-function warnOnce(message: string): void {
-  if (emittedWarnings.has(message)) {
-    return;
-  }
-  emittedWarnings.add(message);
-  console.warn(message);
-}
+import {
+  INBOX_SCOPE_PREFIX,
+  normalizeScopes,
+  type Principal,
+  requireFullScope,
+  WILDCARD_SCOPE,
+} from "./principal";
+import { type ApiKeyObject, parseStringArray, toApiKey } from "./serialize";
 
 function operatorToken(env: Env): string | null {
   const token = env.OPERATOR_TOKEN;
@@ -43,6 +40,7 @@ function operatorToken(env: Env): string | null {
 
 export interface CreateApiKeyInput {
   name?: string | null;
+  scopes?: unknown;
 }
 
 export interface CreatedApiKey extends ApiKeyObject {
@@ -83,6 +81,7 @@ export async function authenticate(
       account: await ensureOperatorAccount(env),
       keyId: OPERATOR_KEY_ID,
       pending: false,
+      scopes: [WILDCARD_SCOPE],
     };
   }
   const row = await getApiKeyByHash(env.DB, await sha256Hex(key), {
@@ -95,7 +94,12 @@ export async function authenticate(
   if (account === null) {
     return null;
   }
-  return { account, keyId: row.id, pending: row.activated_at === null };
+  return {
+    account,
+    keyId: row.id,
+    pending: row.activated_at === null,
+    scopes: parseStringArray(row.scopes_json),
+  };
 }
 
 async function mintApiKey(
@@ -103,6 +107,7 @@ async function mintApiKey(
   accountId: string,
   name: string | null,
   pending: boolean,
+  scopes: string[] = [WILDCARD_SCOPE],
 ): Promise<CreatedApiKey> {
   const generated = await generateApiKey();
   const createdAt = now();
@@ -112,19 +117,42 @@ async function mintApiKey(
     keyHash: generated.hash,
     prefix: generated.prefix,
     name,
-    scopesJson: DEFAULT_SCOPES_JSON,
+    scopesJson: JSON.stringify(scopes),
     createdAt,
     activatedAt: pending ? null : createdAt,
   });
   return { ...toApiKey(row), key: generated.key };
 }
 
-export function createApiKey(
+async function ownedScopes(env: Env, accountId: string, scopes: string[]): Promise<string[]> {
+  for (const scope of scopes) {
+    if (scope === WILDCARD_SCOPE) {
+      continue;
+    }
+    const inboxId = scope.slice(INBOX_SCOPE_PREFIX.length);
+    if ((await getInboxForAccount(env.DB, accountId, inboxId)) === null) {
+      throw badRequest("scope names an inbox this account does not own");
+    }
+  }
+  return scopes;
+}
+
+export async function createApiKey(
   env: Env,
   principal: Principal,
   input: CreateApiKeyInput = {},
 ): Promise<CreatedApiKey> {
-  return mintApiKey(env, principal.account.id, optionalName(input.name), false);
+  requireFullScope(principal);
+  const scopes = await ownedScopes(env, principal.account.id, normalizeScopes(input.scopes));
+  const created = await mintApiKey(
+    env,
+    principal.account.id,
+    optionalName(input.name),
+    false,
+    scopes,
+  );
+  await recordAccountAudit(env, principal.account.id, "key.created", created.key_id);
+  return created;
 }
 
 export function createPendingApiKey(env: Env, accountId: string): Promise<CreatedApiKey> {
@@ -132,6 +160,7 @@ export function createPendingApiKey(env: Env, accountId: string): Promise<Create
 }
 
 export async function listApiKeys(env: Env, principal: Principal): Promise<Page<ApiKeyObject>> {
+  requireFullScope(principal);
   const rows = await listApiKeyRows(env.DB, principal.account.id);
   return { items: rows.map(toApiKey), next_page_token: null };
 }
@@ -141,9 +170,11 @@ export async function revokeApiKey(
   principal: Principal,
   keyId: string,
 ): Promise<RevokedApiKey> {
+  requireFullScope(principal);
   const revoked = await revokeApiKeyRow(env.DB, principal.account.id, keyId, now());
   if (!revoked) {
     throw notFound("api key not found");
   }
+  await recordAccountAudit(env, principal.account.id, "key.revoked", keyId);
   return { revoked: true };
 }

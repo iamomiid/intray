@@ -1,5 +1,7 @@
 export const OPERATOR_TOKEN = "op_test_0123456789abcdef0123456789abcdef";
 
+export const ADMIN_SECRET = "admin_test_0123456789abcdef0123456789abcdef";
+
 const TABLES = [
   "attachments",
   "messages",
@@ -8,6 +10,10 @@ const TABLES = [
   "inboxes",
   "webhooks",
   "usage",
+  "audit_log",
+  "invites",
+  "memberships",
+  "orgs",
   "otps",
   "api_keys",
   "accounts",

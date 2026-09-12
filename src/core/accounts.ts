@@ -8,10 +8,10 @@ import {
   incrementOtpAttempts,
   insertOtp,
 } from "../db/otps";
-import type { AccountRow, InboxRow } from "../db/rows";
+import type { AccountRow, InboxRow, InviteRow } from "../db/rows";
 import { sendOtpEmail } from "../email/system";
 import { config, type Env } from "../env";
-import { isBlockedSignupDomain, isValidEmail, splitAddress } from "../lib/address";
+import { normalizeSignupEmail } from "../lib/address";
 import { badRequest, forbidden, tooManyRequests } from "../lib/errors";
 import { constantTimeEqual, sha256Hex } from "../lib/hash";
 import { newId } from "../lib/ids";
@@ -20,6 +20,7 @@ import { now } from "../lib/time";
 import { createInbox } from "./inboxes";
 import { createApiKey, createPendingApiKey } from "./keys";
 import { operatorEmail } from "./operator";
+import { acceptInvite, signupInvite } from "./orgs";
 import type { Principal } from "./principal";
 import { type AccountObject, toAccount } from "./serialize";
 
@@ -59,17 +60,6 @@ export interface MeResult {
   key_id: string;
 }
 
-function normalizeEmail(raw: string): string {
-  const email = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!isValidEmail(email)) {
-    throw badRequest("invalid email");
-  }
-  if (isBlockedSignupDomain(splitAddress(email).domain)) {
-    throw badRequest("email domain not allowed");
-  }
-  return email;
-}
-
 async function oldestInbox(env: Env, accountId: string): Promise<InboxRow | null> {
   const total = await countInboxes(env.DB, accountId);
   if (total === 0) {
@@ -107,12 +97,23 @@ function requireOpenSignup(env: Env, email: string): void {
   }
 }
 
+async function joinInvitedOrg(
+  env: Env,
+  invite: InviteRow | null,
+  account: AccountRow,
+): Promise<void> {
+  if (invite === null) {
+    return;
+  }
+  await acceptInvite(env, invite, account);
+}
+
 async function inboxIdFor(env: Env, account: AccountRow, username: string | null): Promise<string> {
   const current = await oldestInbox(env, account.id);
   if (current !== null) {
     return current.inbox_id;
   }
-  const principal: Principal = { account, keyId: "", pending: false };
+  const principal: Principal = { account, keyId: "", pending: false, scopes: ["*"] };
   return (await createInbox(env, principal, { username })).inbox_id;
 }
 
@@ -121,11 +122,15 @@ export async function signup(
   input: SignupInput,
   context: SignupContext = {},
 ): Promise<SignupResult> {
-  const email = normalizeEmail(input.email);
+  const email = normalizeSignupEmail(input.email);
   if (email === operatorEmail(env)) {
     throw badRequest("email reserved");
   }
-  requireOpenSignup(env, email);
+  const existing = await getAccountByEmail(env.DB, email);
+  const invite = await signupInvite(env, email, existing !== null);
+  if (invite === null) {
+    requireOpenSignup(env, email);
+  }
   const ip = typeof context.ip === "string" ? context.ip.trim() : "";
   if (ip.length > 0) {
     const outcome = await env.RATE.limit({ key: ip });
@@ -135,10 +140,10 @@ export async function signup(
   }
 
   const username = input.username ?? null;
-  const existing = await getAccountByEmail(env.DB, email);
   if (existing !== null) {
     const inboxId = await inboxIdFor(env, existing, username);
     const pending = await createPendingApiKey(env, existing.id);
+    await joinInvitedOrg(env, invite, existing);
     return {
       api_key: pending.key,
       inbox_id: inboxId,
@@ -150,7 +155,8 @@ export async function signup(
   }
 
   const account = await insertAccount(env.DB, { id: newId("acc"), email, createdAt: now() });
-  const principal: Principal = { account, keyId: "", pending: false };
+  await joinInvitedOrg(env, invite, account);
+  const principal: Principal = { account, keyId: "", pending: false, scopes: ["*"] };
   const inboxId = (await createInbox(env, principal, { username })).inbox_id;
   const created = await createApiKey(env, principal);
 

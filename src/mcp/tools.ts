@@ -8,6 +8,8 @@ import {
   createApiKey,
   createDraft,
   createInbox,
+  createInvite,
+  createOrg,
   createWebhook,
   deleteDraft,
   deleteInbox,
@@ -19,21 +21,30 @@ import {
   getDraft,
   getInbox,
   getMessage,
+  getOrg,
   getThread,
   getUsage,
   getWebhook,
+  listAudit,
   listDrafts,
   listInboxes,
+  listInvites,
+  listMembers,
   listMessages,
+  listOrgs,
   listThreads,
   listWebhooks,
   me,
+  provisionInbox,
+  removeMember,
   replyToMessage,
+  revokeInvite,
   searchMessages,
   sendDraft,
   sendMessage,
   signup,
   updateDraft,
+  updateMember,
   updateMessageLabels,
   updateThreadLabels,
   updateWebhook,
@@ -54,6 +65,10 @@ const messageId = z.string().min(1);
 const threadId = z.string().min(1);
 
 const webhookId = z.string().min(1);
+
+const orgId = z.string().min(1);
+
+const accountId = z.string().min(1);
 
 const labels = z.array(z.string());
 
@@ -166,10 +181,16 @@ function registerAccountTools(server: McpServer, env: Env, principal: Principal)
     "create_api_key",
     {
       title: "Create API key",
-      description: "Mint another API key. The full key is returned only here.",
-      inputSchema: z.object({ name: z.string().optional() }),
+      description:
+        'Mint another API key. The full key is returned only here. scopes defaults to ["*"];' +
+        ' pass ["inbox:<address>"] entries to mint a key that reaches those inboxes alone and no' +
+        " account-level operation. Every inbox named must be one this account owns.",
+      inputSchema: z.object({
+        name: z.string().optional(),
+        scopes: z.array(z.string()).optional(),
+      }),
     },
-    (args) => run(() => createApiKey(env, principal, { name: args.name })),
+    (args) => run(() => createApiKey(env, principal, { name: args.name, scopes: args.scopes })),
   );
 
   server.registerTool(
@@ -652,6 +673,145 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
   );
 }
 
+function registerOrgTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "create_org",
+    {
+      title: "Create org",
+      description:
+        "Bootstrap company mode: create the deployment's org and become its admin. Takes the" +
+        " deployment's ADMIN_SECRET. Only one org exists per deployment, so a second call answers" +
+        " conflict, and once it exists signup is invite-only.",
+      inputSchema: z.object({ name: z.string(), admin_secret: z.string() }),
+    },
+    (args) => run(() => createOrg(env, principal, args)),
+  );
+
+  server.registerTool(
+    "list_orgs",
+    {
+      title: "List orgs",
+      description: "List the orgs this account belongs to with its role in each.",
+      inputSchema: z.object({}),
+    },
+    () => run(() => listOrgs(env, principal)),
+  );
+
+  server.registerTool(
+    "get_org",
+    {
+      title: "Get org",
+      description: "Fetch one org with its member count.",
+      inputSchema: z.object({ org_id: orgId }),
+    },
+    (args) => run(() => getOrg(env, principal, args.org_id)),
+  );
+
+  server.registerTool(
+    "create_invite",
+    {
+      title: "Create invite",
+      description:
+        "Invite an email address to the org, admins only. role defaults to member. The invited" +
+        " address accepts by calling signup, which creates the account, its membership and its" +
+        " first inbox.",
+      inputSchema: z.object({
+        org_id: orgId,
+        email: z.string(),
+        role: z.enum(["admin", "member"]).optional(),
+      }),
+    },
+    (args) => run(() => createInvite(env, principal, args.org_id, args)),
+  );
+
+  server.registerTool(
+    "list_invites",
+    {
+      title: "List invites",
+      description: "List the org's open invites, newest first. Admins only.",
+      inputSchema: z.object({ org_id: orgId }),
+    },
+    (args) => run(() => listInvites(env, principal, args.org_id)),
+  );
+
+  server.registerTool(
+    "revoke_invite",
+    {
+      title: "Revoke invite",
+      description: "Withdraw an open invite. Admins only.",
+      inputSchema: z.object({ org_id: orgId, invite_id: z.string().min(1) }),
+    },
+    (args) => run(() => revokeInvite(env, principal, args.org_id, args.invite_id)),
+  );
+
+  server.registerTool(
+    "list_members",
+    {
+      title: "List members",
+      description: "List the org's members with their role, email and inbox count.",
+      inputSchema: z.object({ org_id: orgId }),
+    },
+    (args) => run(() => listMembers(env, principal, args.org_id)),
+  );
+
+  server.registerTool(
+    "update_member",
+    {
+      title: "Update member",
+      description: "Change a member's role, admins only. Demoting the last admin answers conflict.",
+      inputSchema: z.object({
+        org_id: orgId,
+        account_id: accountId,
+        role: z.enum(["admin", "member"]),
+      }),
+    },
+    (args) => run(() => updateMember(env, principal, args.org_id, args.account_id, args)),
+  );
+
+  server.registerTool(
+    "remove_member",
+    {
+      title: "Remove member",
+      description:
+        "Remove a member from the org and revoke every API key on their account, admins only." +
+        " Their inboxes and mail are left alone. Removing the last admin answers conflict.",
+      inputSchema: z.object({ org_id: orgId, account_id: accountId }),
+    },
+    (args) => run(() => removeMember(env, principal, args.org_id, args.account_id)),
+  );
+
+  server.registerTool(
+    "provision_inbox",
+    {
+      title: "Provision inbox",
+      description:
+        "Create an inbox owned by a member of the org, admins only. It counts against that" +
+        " member's inbox quota and follows the same rules as create_inbox.",
+      inputSchema: z.object({
+        org_id: orgId,
+        account_id: accountId,
+        username: z.string().optional(),
+        domain: z.string().optional(),
+        display_name: z.string().optional(),
+      }),
+    },
+    (args) => run(() => provisionInbox(env, principal, args.org_id, args)),
+  );
+
+  server.registerTool(
+    "list_audit",
+    {
+      title: "List audit log",
+      description:
+        "Read the org's append-only audit log, newest first. Admins only. Covers org creation," +
+        " invites, membership changes, inbox provisioning and deletion, and API key creation and" +
+        " revocation.",
+      inputSchema: z.object({ org_id: orgId, ...pageArgs }),
+    },
+    (args) => run(() => listAudit(env, principal, args.org_id, args)),
+  );
+}
+
 export function registerTools(server: McpServer, env: Env, principal: Principal | null): void {
   if (principal === null) {
     registerOnboardingTools(server, env);
@@ -664,4 +824,5 @@ export function registerTools(server: McpServer, env: Env, principal: Principal 
   registerSendingTools(server, env, principal);
   registerDraftTools(server, env, principal);
   registerWebhookTools(server, env, principal);
+  registerOrgTools(server, env, principal);
 }

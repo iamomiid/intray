@@ -120,6 +120,50 @@ export interface WebhookRow {
   created_at: number;
 }
 
+export interface OrgRow {
+  org_id: string;
+  name: string;
+  created_at: number;
+}
+
+export interface MembershipRow {
+  org_id: string;
+  account_id: string;
+  role: string;
+  created_at: number;
+}
+
+export interface OrgMembershipRow extends OrgRow {
+  role: string;
+}
+
+export interface MemberRow {
+  account_id: string;
+  email: string;
+  role: string;
+  inbox_count: number;
+  created_at: number;
+}
+
+export interface InviteRow {
+  invite_id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  invited_by: string;
+  created_at: number;
+  accepted_at: number | null;
+}
+
+export interface AuditRow {
+  audit_id: string;
+  org_id: string;
+  account_id: string;
+  action: string;
+  target: string | null;
+  created_at: number;
+}
+
 export interface DeletedObjectKeys {
   rawKeys: string[];
   attachmentKeys: string[];

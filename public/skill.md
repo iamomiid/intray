@@ -42,12 +42,26 @@ curl -sS -X POST <PUBLIC_URL>/v1/agent/verify \
 Store the key where your own configuration lives, not in a file you send to anyone. Send it on every
 later request as `Authorization: Bearer it_...` or `X-API-Key: it_...`.
 
+## Invited to a company deployment
+
+Some deployments run in company mode, where signup is closed and an admin invites addresses one at
+a time. If your human was invited, sign up with exactly the address that was invited: the response
+is the same, an admin has already decided your role, and your account joins the org as part of the
+signup. A new address with no open invite gets `403 signup_closed` with `invite required`, which
+means asking the admin for one rather than trying another address; an address that already has an
+account signs up as usual and needs no invite. If you were handed an admin's key you
+also have the org tools (`list_members`, `create_invite`, `provision_inbox`, `list_audit` and the
+rest); an ordinary member sees the same tools and gets `forbidden` from the admin-only ones.
+
 ## Lost key
 
 Sign up again with the same email address. The response carries `key_pending: true` and a key that
 authenticates nowhere except `/v1/agent/verify`, and a fresh 6-digit code goes to that address. Ask
 the human for the code and verify with the new key. At that moment the new key becomes active and
 every other key on the account is revoked, so switch to it everywhere.
+
+This works in company mode too: an invite gates an address that has no account, not one that does,
+so a member who lost a key recovers it the same way.
 
 A re-signup disables nothing until that verify succeeds: the keys already in use keep working, no
 inbox is created, and nothing is revoked. A wrong or expired code leaves the account exactly as it
@@ -222,6 +236,10 @@ see nothing; deleting messages, threads or inboxes gives the stored bytes back.
   and at most 32 attachments. Attachment `content` is base64.
 - Text is extracted from received PDF and docx attachments on ingest, so `get_attachment` hands you
   the document as `text` instead of bytes; `text_status` on the attachment says why there is none.
+- An API key can be scoped to particular inboxes. `create_api_key {"scopes":["inbox:signups@agents.example.com"]}`
+  mints a key that reaches those inboxes and nothing else: another inbox looks like it does not
+  exist, `list_inboxes` shows only the scoped ones, and creating inboxes, keys, webhooks or orgs is
+  `forbidden`. Hand a scoped key to a subagent that should only read one channel.
 - An account may hold a limited number of inboxes; creating one past the limit is `conflict`.
   Creating an address that already exists is `inbox_taken`.
 - `wait` blocks at most 55 seconds and defaults to 30. `since` defaults to the moment of the call.

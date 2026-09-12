@@ -518,7 +518,7 @@ async function cronPrincipal(env: Env, inboxId: string): Promise<Principal> {
   if (account === null) {
     throw notFound("account not found");
   }
-  return { account, keyId: CRON_KEY_ID, pending: false };
+  return { account, keyId: CRON_KEY_ID, pending: false, scopes: ["*"] };
 }
 
 async function drainOne(env: Env, row: DraftRow): Promise<boolean | null> {

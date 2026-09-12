@@ -8,7 +8,7 @@ import { now } from "../src/lib/time";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
 import replyEml from "./fixtures/reply.eml?raw";
-import { OPERATOR_TOKEN, resetDatabase } from "./support";
+import { ADMIN_SECRET, OPERATOR_TOKEN, resetDatabase } from "./support";
 
 interface JsonRpcResponse {
   jsonrpc: "2.0";
@@ -41,6 +41,8 @@ const AGENT_TOOLS = [
   "create_api_key",
   "create_draft",
   "create_inbox",
+  "create_invite",
+  "create_org",
   "create_webhook",
   "delete_draft",
   "delete_inbox",
@@ -52,19 +54,28 @@ const AGENT_TOOLS = [
   "get_draft",
   "get_inbox",
   "get_message",
+  "get_org",
   "get_thread",
   "get_usage",
   "get_webhook",
+  "list_audit",
   "list_drafts",
   "list_inboxes",
+  "list_invites",
+  "list_members",
   "list_messages",
+  "list_orgs",
   "list_threads",
   "list_webhooks",
+  "provision_inbox",
+  "remove_member",
   "reply_to_message",
+  "revoke_invite",
   "search_messages",
   "send_draft",
   "send_message",
   "update_draft",
+  "update_member",
   "update_message_labels",
   "update_thread_labels",
   "update_webhook",
@@ -184,14 +195,14 @@ it("signs up over MCP and unlocks the authenticated tool set", async () => {
   expect(created.inbox_id.endsWith("@intray.example")).toBe(true);
   const names = await toolNames(created.api_key);
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(34);
+  expect(names).toHaveLength(45);
 });
 
 it("serves the full tool set to the operator token", async () => {
   const names = await toolNames(OPERATOR_TOKEN);
 
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(34);
+  expect(names).toHaveLength(45);
 
   const seen = payload<{ account: { account_id: string; verified: boolean }; key_id: string }>(
     await callTool("auth_me", {}, OPERATOR_TOKEN),
@@ -587,4 +598,78 @@ it("refuses an unsendable draft through the tools", async () => {
 
   expect(refused.isError).toBe(true);
   expect(payload<{ error: { code: string } }>(refused).error.code).toBe("invalid_address");
+});
+
+it("bootstraps an org, invites and provisions through the org tools", async () => {
+  const org = payload<{ org_id: string; name: string }>(
+    await callTool("create_org", { name: "Acme", admin_secret: ADMIN_SECRET }, OPERATOR_TOKEN),
+  );
+  expect(org.org_id.startsWith("org_")).toBe(true);
+
+  const listedOrgs = payload<{ items: { org_id: string; role: string }[] }>(
+    await callTool("list_orgs", {}, OPERATOR_TOKEN),
+  );
+  expect(listedOrgs.items).toEqual([{ ...org, created_at: expect.any(Number), role: "admin" }]);
+
+  const invite = payload<{ invite_id: string; email: string }>(
+    await callTool(
+      "create_invite",
+      { org_id: org.org_id, email: HUMAN, role: "member" },
+      OPERATOR_TOKEN,
+    ),
+  );
+  expect(invite.email).toBe(HUMAN);
+
+  const joined = await onboard();
+  const members = payload<{ items: { account_id: string; role: string }[] }>(
+    await callTool("list_members", { org_id: org.org_id }, OPERATOR_TOKEN),
+  );
+  expect(members.items.map((member) => member.account_id)).toContain(joined.account_id);
+
+  const provisioned = payload<{ inbox_id: string }>(
+    await callTool(
+      "provision_inbox",
+      { org_id: org.org_id, account_id: joined.account_id, username: "provisioned" },
+      OPERATOR_TOKEN,
+    ),
+  );
+  expect(provisioned.inbox_id).toBe("provisioned@intray.example");
+
+  const log = payload<{ items: { action: string }[] }>(
+    await callTool("list_audit", { org_id: org.org_id, limit: 100 }, OPERATOR_TOKEN),
+  );
+  expect(log.items.map((entry) => entry.action)).toContain("inbox.provisioned");
+
+  const refused = await callTool(
+    "create_org",
+    { name: "Second", admin_secret: ADMIN_SECRET },
+    OPERATOR_TOKEN,
+  );
+  expect(refused.isError).toBe(true);
+  expect(payload<{ error: { code: string } }>(refused).error.code).toBe("conflict");
+});
+
+it("mints a scoped key through create_api_key", async () => {
+  const created = await onboard();
+  const inbox = payload<{ inbox_id: string }>(
+    await callTool("create_inbox", { username: "scoped" }, created.api_key),
+  );
+
+  const key = payload<{ key: string; scopes: string[] }>(
+    await callTool(
+      "create_api_key",
+      { name: "scoped", scopes: [`inbox:${inbox.inbox_id}`] },
+      created.api_key,
+    ),
+  );
+  expect(key.scopes).toEqual([`inbox:${inbox.inbox_id}`]);
+
+  const listed = payload<{ items: { inbox_id: string }[] }>(
+    await callTool("list_inboxes", {}, key.key),
+  );
+  expect(listed.items.map((item) => item.inbox_id)).toEqual([inbox.inbox_id]);
+
+  const refused = await callTool("create_inbox", { username: "another" }, key.key);
+  expect(refused.isError).toBe(true);
+  expect(payload<{ error: { code: string } }>(refused).error.code).toBe("forbidden");
 });

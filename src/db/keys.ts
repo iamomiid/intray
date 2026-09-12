@@ -100,6 +100,18 @@ export async function revokeApiKey(
   return (result.meta.changes ?? 0) > 0;
 }
 
+export async function revokeAccountApiKeys(
+  db: D1Database,
+  accountId: string,
+  revokedAt: number = now(),
+): Promise<number> {
+  const result = await db
+    .prepare(`UPDATE api_keys SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL`)
+    .bind(revokedAt, accountId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 export async function revokeOtherApiKeys(
   db: D1Database,
   accountId: string,

@@ -2,6 +2,10 @@ import type { DeletedInboxKeys, InboxRow, ListOptions } from "./rows";
 
 const COLUMNS = "inbox_id, account_id, username, domain, display_name, created_at";
 
+export interface ListInboxOptions extends ListOptions {
+  inboxIds?: string[] | null;
+}
+
 export interface InsertInboxInput {
   inboxId: string;
   accountId: string;
@@ -57,24 +61,27 @@ export function getInboxForAccount(
 export async function listInboxes(
   db: D1Database,
   accountId: string,
-  options: ListOptions,
+  options: ListInboxOptions,
 ): Promise<InboxRow[]> {
   const cursor = options.cursor ?? null;
+  const scoped = options.inboxIds ?? null;
+  const scopeClause = scoped === null ? "" : " AND inbox_id IN (SELECT value FROM json_each(?))";
+  const scopeBinding = scoped === null ? [] : [JSON.stringify(scoped)];
   const statement =
     cursor === null
       ? db
           .prepare(
-            `SELECT ${COLUMNS} FROM inboxes WHERE account_id = ?
+            `SELECT ${COLUMNS} FROM inboxes WHERE account_id = ?${scopeClause}
              ORDER BY created_at DESC, inbox_id DESC LIMIT ?`,
           )
-          .bind(accountId, options.limit + 1)
+          .bind(accountId, ...scopeBinding, options.limit + 1)
       : db
           .prepare(
-            `SELECT ${COLUMNS} FROM inboxes WHERE account_id = ?
+            `SELECT ${COLUMNS} FROM inboxes WHERE account_id = ?${scopeClause}
              AND (created_at < ? OR (created_at = ? AND inbox_id < ?))
              ORDER BY created_at DESC, inbox_id DESC LIMIT ?`,
           )
-          .bind(accountId, cursor.at, cursor.at, cursor.id, options.limit + 1);
+          .bind(accountId, ...scopeBinding, cursor.at, cursor.at, cursor.id, options.limit + 1);
   const result = await statement.all<InboxRow>();
   return result.results;
 }

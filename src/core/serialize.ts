@@ -2,9 +2,14 @@ import type {
   AccountRow,
   ApiKeyRow,
   AttachmentRow,
+  AuditRow,
   DraftRow,
   InboxRow,
+  InviteRow,
+  MemberRow,
   MessageRow,
+  OrgMembershipRow,
+  OrgRow,
   ThreadRow,
   WebhookRow,
 } from "../db/rows";
@@ -29,6 +34,46 @@ export interface ApiKeyObject {
   activated_at: number | null;
   revoked_at: number | null;
   active: boolean;
+}
+
+export interface OrgObject {
+  org_id: string;
+  name: string;
+  created_at: number;
+}
+
+export interface OrgMembershipObject extends OrgObject {
+  role: string;
+}
+
+export interface OrgDetailObject extends OrgObject {
+  member_count: number;
+}
+
+export interface MemberObject {
+  account_id: string;
+  email: string;
+  role: string;
+  inbox_count: number;
+  created_at: number;
+}
+
+export interface InviteObject {
+  invite_id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  invited_by: string;
+  created_at: number;
+  accepted_at: number | null;
+}
+
+export interface AuditObject {
+  audit_id: string;
+  account_id: string;
+  action: string;
+  target: string | null;
+  created_at: number;
 }
 
 export interface InboxObject {
@@ -206,6 +251,46 @@ export function toApiKey(row: ApiKeyRow): ApiKeyObject {
     activated_at: row.activated_at,
     revoked_at: row.revoked_at,
     active: row.activated_at !== null && row.revoked_at === null,
+  };
+}
+
+export function toOrg(row: OrgRow): OrgObject {
+  return { org_id: row.org_id, name: row.name, created_at: row.created_at };
+}
+
+export function toOrgMembership(row: OrgMembershipRow): OrgMembershipObject {
+  return { ...toOrg(row), role: row.role };
+}
+
+export function toMember(row: MemberRow): MemberObject {
+  return {
+    account_id: row.account_id,
+    email: row.email,
+    role: row.role,
+    inbox_count: row.inbox_count,
+    created_at: row.created_at,
+  };
+}
+
+export function toInvite(row: InviteRow): InviteObject {
+  return {
+    invite_id: row.invite_id,
+    org_id: row.org_id,
+    email: row.email,
+    role: row.role,
+    invited_by: row.invited_by,
+    created_at: row.created_at,
+    accepted_at: row.accepted_at,
+  };
+}
+
+export function toAuditEntry(row: AuditRow): AuditObject {
+  return {
+    audit_id: row.audit_id,
+    account_id: row.account_id,
+    action: row.action,
+    target: row.target,
+    created_at: row.created_at,
   };
 }
 

@@ -49,6 +49,7 @@ key lookup.
 | `QUOTA_MESSAGES_RECEIVED_PER_MONTH` | per-account cap on messages received in a UTC month, as a string. Empty, absent or `0` is unlimited |
 | `QUOTA_STORAGE_BYTES` | per-account cap on stored bytes, as a string. Empty, absent or `0` is unlimited |
 | `OPERATOR_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put OPERATOR_TOKEN` or `pnpm run setup --operator-token`, never in `wrangler.jsonc`. Authenticates the operator principal. Absent, empty, or shorter than 32 characters disables it. Put it in `.dev.vars` for `pnpm dev` |
+| `ADMIN_SECRET` | a **secret**, not a var. Set with `pnpm wrangler secret put ADMIN_SECRET`, never in `wrangler.jsonc`. Presented as `x-admin-secret` on `POST /v1/orgs` to bootstrap company mode, and used nowhere else. Absent, empty, or shorter than 32 characters disables the bootstrap. Put it in `.dev.vars` for `pnpm dev` |
 
 Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm run setup
 --allow-signup you@example.com,teammate@example.com` writes the var.
@@ -71,14 +72,17 @@ Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm 
 
 `message_rejected` is returned when an unverified account tries to send to any address other than
 its own `accounts.email`. `signup_closed` is returned when `ALLOWED_SIGNUP_EMAILS` is set and the
-address is not in it. `email reserved` is returned when a signup names the operator address. `quota_exceeded` is returned when a send, reply, forward or draft
+address is not in it, and when an org exists and the address has no open invite. `email reserved`
+is returned when a signup names the operator address. `forbidden` is returned when the admin
+secret is wrong or disabled, when a member calls an admin-only org endpoint, and when a key scoped
+to an inbox calls an account-level endpoint. `quota_exceeded` is returned when a send, reply, forward or draft
 send would pass `QUOTA_MESSAGES_SENT_PER_MONTH`; inbound mail past a quota is refused at the SMTP
 transaction with `552 quota exceeded` and never becomes an API error.
 
 ## Status codes
 
-Creates return 201: signup, inbox create, api key create, webhook create, send, reply, forward,
-draft create, and draft send. Everything else returns 200. Bodies that are entirely optional (`POST
+Creates return 201: signup, inbox create, api key create, webhook create, org create, invite
+create, org inbox provision, send, reply, forward, draft create, and draft send. Everything else returns 200. Bodies that are entirely optional (`POST
 /api-keys`, `POST /inboxes`, `.../reply`) may be omitted and are read as `{}`.
 
 ## Pagination
@@ -105,6 +109,36 @@ List endpoints return:
 pending, which only a repeat signup produces; `active` is true when the key is activated and not
 revoked. Only an active key authenticates, and the sole exception is `POST /v1/agent/verify`, which
 also accepts a pending one.
+
+`scopes` is `["*"]` by default. Any other entry is `inbox:<inbox_id>`, the full lowercase address of
+an inbox the account owns. A key holding only `inbox:` scopes reaches every inbox-scoped endpoint on
+those inboxes and nothing else: another inbox answers 404 `not_found`, exactly as a missing one
+does; `GET /v1/inboxes` returns only the scoped inboxes; and `POST /v1/inboxes`, every
+`/v1/api-keys`, `/v1/webhooks` and `/v1/orgs` endpoint answers 403 `forbidden`. `GET /v1/auth/me`
+stays open to it. Scope is enforced in `src/core`, so the REST and MCP surfaces behave alike.
+
+### org
+
+`org_id`, `name`, `created_at`. `GET /v1/orgs/:org_id` adds `member_count`; the entries of `GET
+/v1/orgs` add the caller's `role`.
+
+### member
+
+`account_id`, `email`, `role` (`admin` or `member`), `inbox_count`, `created_at`, the last being
+when the membership was created rather than the account.
+
+### invite
+
+`invite_id`, `org_id`, `email`, `role`, `invited_by` (the admin's `account_id`), `created_at`,
+`accepted_at`, which is null while the invite is open.
+
+### audit entry
+
+`audit_id`, `account_id` (who acted), `action`, `target`, `created_at`. `action` is one of
+`org.created`, `invite.created`, `invite.revoked`, `member.joined`, `member.role_changed`,
+`member.removed`, `inbox.provisioned`, `inbox.deleted`, `key.created` and `key.revoked`. `target`
+is the id or address the action names: an org id, an email, an account id, an inbox address, or a
+key id. The log is append-only; nothing updates or deletes a row.
 
 ### inbox
 
@@ -186,13 +220,76 @@ over. A wrong or expired code changes nothing.
 `otp_sent` is false when the code email could not be sent. Verify called with a non-pending key on
 an already verified account returns the current state and consumes no code.
 
+Once an org exists, signup is invite-only for an address that has no account yet: it answers 403
+`signup_closed` with `invite required`, and `ALLOWED_SIGNUP_EMAILS` is no longer consulted for it.
+An address that holds an open invite signs up exactly as before and additionally joins the org with
+the invited role, which closes the invite. An address that already has an account needs no invite:
+it takes the repeat-signup path above, so lost-key recovery keeps working for a member and for an
+account outside the org, and it joins the org as well when it does hold an open invite. A
+deployment with no org keeps the v1 behavior.
+
 ### API keys
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
 | GET | `/api-keys` | — | `{items, next_page_token: null}` of api_key, never paginated |
-| POST | `/api-keys` | `{name?}` | api_key including `key` |
+| POST | `/api-keys` | `{name?, scopes?}` | api_key including `key` |
 | DELETE | `/api-keys/:key_id` | — | `{revoked: true}` |
+
+`scopes` defaults to `["*"]`. An empty array, an entry that is neither `*` nor `inbox:<address>`,
+and an `inbox:` entry naming an inbox the account does not own are all 400 `bad_request`. Entries
+are lowercased and deduped. `*` may not be mixed with an `inbox:` entry: a list holding both is 400
+`bad_request`, so a key is either full access or a list of inboxes.
+
+### Orgs
+
+Company mode. A deployment with no org behaves exactly as v1 does; the bootstrap below is what
+turns it on, and it is one org per deployment for now.
+
+| Method | Path | Body / query | Returns |
+| --- | --- | --- | --- |
+| POST | `/orgs` | `{name}` plus the `x-admin-secret` header | org, 201 |
+| GET | `/orgs` | — | `{items, next_page_token: null}` of org with `role`, never paginated |
+| GET | `/orgs/:org_id` | — | org with `member_count` |
+| POST | `/orgs/:org_id/invites` | `{email, role?}` | invite, 201 |
+| GET | `/orgs/:org_id/invites` | — | `{items, next_page_token: null}` of open invite |
+| DELETE | `/orgs/:org_id/invites/:invite_id` | — | `{revoked: true}` |
+| GET | `/orgs/:org_id/members` | — | `{items, next_page_token: null}` of member |
+| PATCH | `/orgs/:org_id/members/:account_id` | `{role}` | member |
+| DELETE | `/orgs/:org_id/members/:account_id` | — | `{removed: true}` |
+| POST | `/orgs/:org_id/inboxes` | `{account_id, username?, domain?, display_name?}` | inbox, 201 |
+| GET | `/orgs/:org_id/audit` | `limit`, `page_token` | `{items, next_page_token}` of audit entry |
+
+`POST /orgs` is the bootstrap. It needs an authenticated, verified account and the deployment's
+`ADMIN_SECRET` in the `x-admin-secret` header, creates the org, and makes the caller its admin. A
+wrong secret, or one that is absent or shorter than 32 characters, is 403 `forbidden`; an
+unverified caller is 403 `forbidden`; a second org is 409 `conflict`.
+
+The operator principal is an admin of every org and needs no membership row, so an operator token
+reaches every endpoint here. It holds no membership, so `GET /orgs` is empty for it.
+
+Every endpoint under `/orgs/:org_id` other than `GET /orgs/:org_id` and `GET
+/orgs/:org_id/members` is admin-only: a member gets 403 `forbidden` and an account outside the org
+gets 404 `not_found`, the same answer as an org that does not exist.
+
+`POST /orgs/:org_id/invites` validates the address exactly as signup does, refuses an address that
+is already a member and a second open invite for the same address with 409 `conflict`, defaults
+`role` to `member`, and writes an `invite.created` audit row. Nothing is emailed by the invite
+itself: the invited address accepts it by calling `POST /v1/agent/signup`, which mails the OTP as
+it always has. `DELETE` withdraws an open invite; an accepted or unknown one is 404 `not_found`.
+
+`PATCH .../members/:account_id` changes a role. Demoting the last admin is 409 `conflict`, and so
+is removing them. `DELETE .../members/:account_id` drops the membership and revokes every API key
+on that account, so the removed member is locked out at once. Their inboxes, threads and messages
+are left alone: removing a member does not delete their mail, and an admin who wants the inboxes
+gone deletes them explicitly.
+
+`POST /orgs/:org_id/inboxes` provisions an inbox owned by a member. It runs the same `createInbox`
+rules as `POST /v1/inboxes`, including `INBOX_LIMIT`, and the inbox counts against that member's
+quota rather than the admin's. Members keep creating their own inboxes under the same quota.
+
+`GET /orgs/:org_id/audit` is keyset-paginated by `created_at` descending, breaking ties on
+`audit_id` descending. A key created or revoked on an account outside every org writes no row.
 
 ### Inboxes
 
@@ -553,8 +650,19 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `update_draft` | `inbox_id`, `draft_id`, any body field, `send_at?` |
 | `delete_draft` | `inbox_id`, `draft_id` |
 | `send_draft` | `inbox_id`, `draft_id` |
-| `create_api_key` | `name?` |
+| `create_api_key` | `name?`, `scopes?` |
 | `get_usage` | — |
+| `create_org` | `name`, `admin_secret` |
+| `list_orgs` | — |
+| `get_org` | `org_id` |
+| `create_invite` | `org_id`, `email`, `role?` |
+| `list_invites` | `org_id` |
+| `revoke_invite` | `org_id`, `invite_id` |
+| `list_members` | `org_id` |
+| `update_member` | `org_id`, `account_id`, `role` |
+| `remove_member` | `org_id`, `account_id` |
+| `provision_inbox` | `org_id`, `account_id`, `username?`, `domain?`, `display_name?` |
+| `list_audit` | `org_id`, `limit?`, `page_token?` |
 | `list_webhooks` | — |
 | `create_webhook` | `url`, `events?`, `description?` |
 | `get_webhook` | `webhook_id` |
@@ -580,3 +688,8 @@ Differences from REST, all deliberate:
   `timeout` are numbers.
 - `send_message` has no `headers` argument.
 - `update_draft` takes `send_at` as a number or null; null unschedules the draft.
+- `create_org` takes `admin_secret` as an argument, because an MCP tool call carries no headers of
+  its own. It is the same secret the `x-admin-secret` header carries over REST.
+- The org tools are registered for every authenticated principal, and the ones that need an admin
+  answer `forbidden` for a member, so the tool count does not depend on the caller's role. Server
+  instructions gain one sentence naming them when the principal administers an org.
