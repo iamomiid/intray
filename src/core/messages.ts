@@ -63,7 +63,7 @@ const WAIT_BATCH = 100;
 
 const OUTBOUND_LABELS: readonly string[] = ["sent"];
 
-interface OutboundIdentity {
+export interface OutboundIdentity {
   email: string;
   tag: string | null;
 }
@@ -441,7 +441,7 @@ function mailboxes(addresses: string[]): string {
   return JSON.stringify(addresses.map((address) => ({ address, name: null })));
 }
 
-function resolveSender(inbox: InboxRow, from: string | undefined): OutboundIdentity {
+export function resolveSender(inbox: InboxRow, from: string | undefined): OutboundIdentity {
   if (from === undefined || from === null) {
     return { email: inbox.inbox_id, tag: null };
   }

@@ -6,23 +6,29 @@ import {
   batchDeleteMessages,
   batchUpdateLabels,
   createApiKey,
+  createDraft,
   createInbox,
+  deleteDraft,
   deleteInbox,
   deleteMessage,
   deleteThread,
   forwardMessage,
   getAttachment,
+  getDraft,
   getInbox,
   getMessage,
   getThread,
+  listDrafts,
   listInboxes,
   listMessages,
   listThreads,
   me,
   replyToMessage,
   searchMessages,
+  sendDraft,
   sendMessage,
   signup,
+  updateDraft,
   updateMessageLabels,
   updateThreadLabels,
   verify,
@@ -386,6 +392,115 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
   );
 }
 
+const draftId = z.string().min(1);
+
+function registerDraftTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "create_draft",
+    {
+      title: "Create draft",
+      description:
+        "Compose a message without sending it. Defaults to kind send; pass parent_message_id to draft" +
+        " a reply, which then takes only text, html, from, reply_all and attachments. The body is" +
+        " validated exactly as the send would validate it, so an unsendable draft is refused here." +
+        " send_at is Unix milliseconds in the future and schedules the draft; a cron trigger sends it" +
+        " within a minute of that time.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        kind: z.enum(["send", "reply"]).optional(),
+        parent_message_id: messageId.optional(),
+        from: senderAddress,
+        to: recipients.optional(),
+        cc: recipients.optional(),
+        bcc: recipients.optional(),
+        subject: z.string().optional(),
+        text: z.string().optional(),
+        html: z.string().optional(),
+        reply_to: z.string().optional(),
+        reply_all: z.boolean().optional(),
+        attachments: attachments.optional(),
+        send_at: z.number().optional(),
+      }),
+    },
+    (args) => run(() => createDraft(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "list_drafts",
+    {
+      title: "List drafts",
+      description:
+        "List an inbox's drafts, most recently updated first. status filters by draft, scheduled," +
+        " sending, sent or failed.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        status: z.enum(["draft", "scheduled", "sending", "sent", "failed"]).optional(),
+        ...pageArgs,
+      }),
+    },
+    (args) => run(() => listDrafts(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "get_draft",
+    {
+      title: "Get draft",
+      description: "Fetch one draft with its status, schedule and last error.",
+      inputSchema: z.object({ inbox_id: inboxId, draft_id: draftId }),
+    },
+    (args) => run(() => getDraft(env, principal, args.inbox_id, args.draft_id)),
+  );
+
+  server.registerTool(
+    "update_draft",
+    {
+      title: "Update draft",
+      description:
+        "Change any body field of a draft; fields left out keep their value and the result is" +
+        " re-validated as a send. send_at reschedules, send_at null unschedules, and a past schedule" +
+        " is dropped. A sending or sent draft answers conflict.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        draft_id: draftId,
+        from: senderAddress,
+        to: recipients.optional(),
+        cc: recipients.optional(),
+        bcc: recipients.optional(),
+        subject: z.string().optional(),
+        text: z.string().optional(),
+        html: z.string().optional(),
+        reply_to: z.string().optional(),
+        reply_all: z.boolean().optional(),
+        attachments: attachments.optional(),
+        send_at: z.number().nullable().optional(),
+      }),
+    },
+    (args) => run(() => updateDraft(env, principal, args.inbox_id, args.draft_id, args)),
+  );
+
+  server.registerTool(
+    "delete_draft",
+    {
+      title: "Delete draft",
+      description: "Delete a draft. A draft being sent right now answers conflict.",
+      inputSchema: z.object({ inbox_id: inboxId, draft_id: draftId }),
+    },
+    (args) => run(() => deleteDraft(env, principal, args.inbox_id, args.draft_id)),
+  );
+
+  server.registerTool(
+    "send_draft",
+    {
+      title: "Send draft",
+      description:
+        "Send a draft now, whatever its send_at, through the same path send_message and" +
+        " reply_to_message use. Returns the sent message and marks the draft sent.",
+      inputSchema: z.object({ inbox_id: inboxId, draft_id: draftId }),
+    },
+    (args) => run(() => sendDraft(env, principal, args.inbox_id, args.draft_id)),
+  );
+}
+
 function registerSendingTools(server: McpServer, env: Env, principal: Principal): void {
   server.registerTool(
     "send_message",
@@ -458,4 +573,5 @@ export function registerTools(server: McpServer, env: Env, principal: Principal 
   registerThreadTools(server, env, principal);
   registerMessageTools(server, env, principal);
   registerSendingTools(server, env, principal);
+  registerDraftTools(server, env, principal);
 }

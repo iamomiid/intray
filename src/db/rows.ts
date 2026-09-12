@@ -72,6 +72,20 @@ export interface MessageRow {
   created_at: number;
 }
 
+export interface DraftRow {
+  draft_id: string;
+  inbox_id: string;
+  kind: string;
+  parent_message_id: string | null;
+  body_json: string;
+  send_at: number | null;
+  status: string;
+  sent_message_id: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface AttachmentRow {
   attachment_id: string;
   message_id: string;
@@ -88,6 +102,10 @@ export interface AttachmentRow {
 export interface DeletedObjectKeys {
   rawKeys: string[];
   attachmentKeys: string[];
+}
+
+export interface DeletedInboxKeys extends DeletedObjectKeys {
+  draftKeys: string[];
 }
 
 export interface ListOptions {

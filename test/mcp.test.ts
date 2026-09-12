@@ -39,21 +39,27 @@ const AGENT_TOOLS = [
   "batch_delete_messages",
   "batch_update_labels",
   "create_api_key",
+  "create_draft",
   "create_inbox",
+  "delete_draft",
   "delete_inbox",
   "delete_message",
   "delete_thread",
   "forward_message",
   "get_attachment",
+  "get_draft",
   "get_inbox",
   "get_message",
   "get_thread",
+  "list_drafts",
   "list_inboxes",
   "list_messages",
   "list_threads",
   "reply_to_message",
   "search_messages",
+  "send_draft",
   "send_message",
+  "update_draft",
   "update_message_labels",
   "update_thread_labels",
   "wait_for_message",
@@ -172,14 +178,14 @@ it("signs up over MCP and unlocks the authenticated tool set", async () => {
   expect(created.inbox_id.endsWith("@intray.example")).toBe(true);
   const names = await toolNames(created.api_key);
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(22);
+  expect(names).toHaveLength(28);
 });
 
 it("serves the full tool set to the operator token", async () => {
   const names = await toolNames(OPERATOR_TOKEN);
 
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(22);
+  expect(names).toHaveLength(28);
 
   const seen = payload<{ account: { account_id: string; verified: boolean }; key_id: string }>(
     await callTool("auth_me", {}, OPERATOR_TOKEN),
@@ -489,4 +495,65 @@ it("deletes a thread through the tools and names a message id it cannot find", a
     created.api_key,
   );
   expect(gone.isError).toBe(true);
+});
+
+it("drafts, edits, schedules and sends over the draft tools", async () => {
+  const inboxId = "drafts-agent@intray.example";
+  await callTool("create_inbox", { username: "drafts-agent" }, OPERATOR_TOKEN);
+
+  const draft = payload<{ draft_id: string; status: string; text: string | null }>(
+    await callTool(
+      "create_draft",
+      { inbox_id: inboxId, to: "bob@example.com", subject: "Status", text: "first" },
+      OPERATOR_TOKEN,
+    ),
+  );
+  expect(draft.status).toBe("draft");
+
+  const scheduled = payload<{ status: string; send_at: number | null; text: string | null }>(
+    await callTool(
+      "update_draft",
+      { inbox_id: inboxId, draft_id: draft.draft_id, text: "second", send_at: now() + 600_000 },
+      OPERATOR_TOKEN,
+    ),
+  );
+  expect(scheduled.status).toBe("scheduled");
+  expect(scheduled.text).toBe("second");
+
+  const listed = payload<{ items: { draft_id: string }[] }>(
+    await callTool("list_drafts", { inbox_id: inboxId, status: "scheduled" }, OPERATOR_TOKEN),
+  );
+  expect(listed.items.map((entry) => entry.draft_id)).toEqual([draft.draft_id]);
+
+  const message = payload<{ message_id: string; direction: string }>(
+    await callTool("send_draft", { inbox_id: inboxId, draft_id: draft.draft_id }, OPERATOR_TOKEN),
+  );
+  expect(message.direction).toBe("outbound");
+
+  const sent = payload<{ status: string; sent_message_id: string | null }>(
+    await callTool("get_draft", { inbox_id: inboxId, draft_id: draft.draft_id }, OPERATOR_TOKEN),
+  );
+  expect(sent.status).toBe("sent");
+  expect(sent.sent_message_id).toBe(message.message_id);
+
+  const refused = await callTool(
+    "delete_draft",
+    { inbox_id: inboxId, draft_id: draft.draft_id },
+    OPERATOR_TOKEN,
+  );
+  expect(refused.isError).toBeUndefined();
+});
+
+it("refuses an unsendable draft through the tools", async () => {
+  const inboxId = "drafts-agent@intray.example";
+  await callTool("create_inbox", { username: "drafts-agent" }, OPERATOR_TOKEN);
+
+  const refused = await callTool(
+    "create_draft",
+    { inbox_id: inboxId, subject: "Status", text: "hi" },
+    OPERATOR_TOKEN,
+  );
+
+  expect(refused.isError).toBe(true);
+  expect(payload<{ error: { code: string } }>(refused).error.code).toBe("invalid_address");
 });

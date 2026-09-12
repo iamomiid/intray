@@ -6,7 +6,8 @@ behind it.
 ## Components
 
 One Cloudflare Worker holds every surface. `src/index.ts` routes `/mcp` to the MCP handler and
-everything else to the Hono app, and exports the `email()` handler that Email Routing calls.
+everything else to the Hono app, and exports the `email()` handler that Email Routing calls and the
+`scheduled()` handler a one-minute cron trigger calls to drain due drafts.
 
 ```
 Email Routing catch-all ──► email() ──► postal-mime ──► D1 (thread and message rows)
@@ -24,6 +25,7 @@ MCP  /mcp           ─┘                └─► R2, env.EMAIL.send
 | mail | `src/email/` | inbound ingest, threading, MIME parsing, outbound builders |
 | helpers | `src/lib/` | ids, otp, hash, errors, pagination, address, limits, rfc, time |
 | setup | `scripts/` | the operator command that provisions a deployment |
+| cron | `triggers.crons` in `wrangler.jsonc` | `* * * * *`, calling `scheduled()` and so `drainDueDrafts` |
 
 Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate limit), and the
 vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS` plus the `OPERATOR_TOKEN`
@@ -102,6 +104,34 @@ parent's stored bare identifiers, bracketed on the wire. A send or a forward ope
 `reply_all` puts every merged recipient in `To` and never in `Cc`, and a forward re-sends the
 parent's inline attachments as ordinary attachments.
 
+### Drafts
+
+A draft is the same outbound body held in `drafts.body_json` until an agent or the cron sends it.
+Attachment bytes are not: they go to R2 at `drf/{draft_id}/{n}`, `n` being the index in the draft's
+attachment list, and `body_json` keeps `{filename, content_type, size, key}` per attachment, so a
+draft row stays small and D1 holds no bytes. A create, and an update that carries `attachments`,
+decodes and validates the base64 first, writes the objects, then writes the row; an update that
+replaces them deletes the objects left behind. A send reads them back, and drops them once the sent
+message holds its own copies under `att/`; a failed send keeps them so the draft can be fixed and
+re-sent. Deleting the draft or its inbox deletes them.
+`src/core/drafts.ts` validates every write by building the message through `buildSend` or
+`buildReply` and throwing the build away, so create and update reject exactly what the send would
+reject and a stored draft is always sendable at the time it was written. `resolveSender` is shared
+with `src/core/messages.ts` for the same reason.
+
+`sendDraft` and `drainDueDrafts` both call `sendMessage` or `replyToMessage` rather than `send`, so
+the verification gate, the limits, labels, threading and the outbound row are identical to a
+synchronous send and a draft is not a second outbound path. The drain builds its `Principal` from
+the inbox's account row with `keyId` `cron`.
+
+`drainDueDrafts` selects `scheduled` drafts with `send_at <= now`, oldest first, at most 50 a run,
+and claims each with `UPDATE drafts SET status = 'sending' WHERE draft_id = ? AND status =
+'scheduled'`, proceeding only when that changed a row. Two overlapping runs therefore send a draft
+once. Each draft ends `sent` with its `sent_message_id` or `failed` with the `AppError` code and
+message in `error`; a failed draft is never retried on its own and is re-scheduled by an update. A
+draft left `sending` by a Worker killed mid-send is picked up by nothing, which is the deliberate
+trade: at most one send, and a stuck row an operator can see, rather than a duplicate email.
+
 `src/email/system.ts` holds `sendOtpEmail`, the only mail the service sends on its own behalf.
 
 ## Auth and onboarding
@@ -127,7 +157,7 @@ looks it up by hash among the unrevoked, activated rows, loads the account, and 
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, twenty-two with one.
+registered depends on the result: three onboarding tools without a live key, twenty-eight with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -146,6 +176,7 @@ numbered migration.
 | `threads` | `thread_id` (`thr_`) | `subject`, `last_message_at`, `message_count`, `participants_json` |
 | `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key` |
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |
+| `drafts` | `draft_id` (`drf_`) | `kind`, `parent_message_id`, `body_json` (attachment metadata only, bytes in R2), `send_at`, `status`, `sent_message_id`, `error`; indexed on `(inbox_id, updated_at)` and `(status, send_at)` |
 | `messages_fts` | `message_id` (UNINDEXED) | FTS5 index over `subject`, `text`, `from_addr`, `from_name`; `inbox_id` UNINDEXED |
 
 Everything hangs off `account_id` through its inbox, and every child row cascades on delete.
@@ -158,11 +189,13 @@ on `messages`, all keyed on `message_id`. The tokenizer is `unicode61 remove_dia
 folds case and diacritics across Unicode and splits on every non-alphanumeric character, which
 turns an address into `alice`, `example`, `com` and makes a sender searchable by any part of it.
 
-R2 holds raw MIME at `raw/{message_id}.eml` and attachment bytes at `att/{message_id}/{n}`, where
-`n` is the attachment's index in the parsed message. An outbound message has no raw object and uses
-the same attachment layout, so downloading an attachment works for sent mail too. Deleting an
-inbox, thread or message through `src/db` returns the `rawKeys` and `attachmentKeys` it removed so
-the caller can drop the matching objects; the db layer never touches R2.
+R2 holds raw MIME at `raw/{message_id}.eml`, attachment bytes at `att/{message_id}/{n}`, where `n`
+is the attachment's index in the parsed message, and unsent draft attachment bytes at
+`drf/{draft_id}/{n}`. An outbound message has no raw object and uses the same attachment layout, so
+downloading an attachment works for sent mail too. Deleting an inbox, thread or message through
+`src/db` returns the `rawKeys` and `attachmentKeys` it removed, and an inbox delete also returns
+the `draftKeys` of its drafts, so the caller can drop the matching objects; the db layer never
+touches R2.
 
 ## Conventions
 
@@ -181,7 +214,8 @@ back onto the wire adds the brackets itself. Case is preserved because the left-
 identifier is opaque and generators do produce case-sensitive tokens. A message with no
 `Message-ID` stores `NULL` and can never be threaded onto, which is correct.
 
-**Ids are lowercase monotonic ULIDs with a type prefix** (`acc_`, `key_`, `thr_`, `msg_`, `att_`).
+**Ids are lowercase monotonic ULIDs with a type prefix** (`acc_`, `key_`, `thr_`, `msg_`, `att_`,
+`drf_`).
 Lists order by `created_at DESC` and break ties on the id, so ids minted in the same millisecond
 must still sort in creation order.
 

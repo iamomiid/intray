@@ -72,9 +72,9 @@ address is not in it. `email reserved` is returned when a signup names the opera
 
 ## Status codes
 
-Creates return 201: signup, inbox create, api key create, send, reply, forward. Everything else
-returns 200. Bodies that are entirely optional (`POST /api-keys`, `POST /inboxes`, `.../reply`) may
-be omitted and are read as `{}`.
+Creates return 201: signup, inbox create, api key create, send, reply, forward, draft create, and
+draft send. Everything else returns 200. Bodies that are entirely optional (`POST /api-keys`, `POST
+/inboxes`, `.../reply`) may be omitted and are read as `{}`.
 
 ## Pagination
 
@@ -133,6 +133,17 @@ always `none`.
 
 The attachment objects embedded on a message carry `text_status` and never the text itself, so
 message lists stay small. The text is read through the attachment text endpoint or `get_attachment`.
+
+### draft
+
+`draft_id`, `inbox_id`, `kind` (`send` or `reply`), `parent_message_id`, the body fields `to`, `cc`,
+`bcc`, `subject`, `text`, `html`, `from`, `reply_to`, `reply_all`, `attachments`, then `send_at`,
+`status`, `sent_message_id`, `error`, `created_at`, `updated_at`.
+
+`to`, `cc` and `bcc` are always arrays of addresses, normalized and deduped as the send path
+normalizes them. `attachments` carries `{filename, content_type, size}` only: the bytes are stored
+in R2 and never returned, so a list of drafts stays small. `sent_message_id` is the `message_id` a successful
+send produced, and `error` is `"<code>: <message>"` from the last failed send.
 
 ## REST endpoints
 
@@ -286,6 +297,66 @@ the way in. `reply_to` is separate and unaffected.
 
 The outbound row is stored with `rfc_message_id` set to the `messageId` returned by the send.
 
+### Drafts
+
+| Method | Path | Body / query | Returns |
+| --- | --- | --- | --- |
+| GET | `/inboxes/:inbox_id/drafts` | `status`, `limit`, `page_token` | `{items, next_page_token}` of draft |
+| POST | `/inboxes/:inbox_id/drafts` | `{kind?, parent_message_id?, to?, cc?, bcc?, subject?, text?, html?, from?, reply_to?, reply_all?, attachments?, send_at?}` | draft, 201 |
+| GET | `/inboxes/:inbox_id/drafts/:draft_id` | — | draft |
+| PATCH | `/inboxes/:inbox_id/drafts/:draft_id` | any body field, plus `send_at` | draft |
+| DELETE | `/inboxes/:inbox_id/drafts/:draft_id` | — | `{deleted: true}` |
+| POST | `/inboxes/:inbox_id/drafts/:draft_id/send` | — | message, 201 |
+
+A draft is a message composed now and sent later, by hand or on a schedule. `kind` defaults to
+`send`, or to `reply` when `parent_message_id` is given; the two disagreeing is 400 `bad_request`,
+and a `parent_message_id` the inbox does not hold is 404 `not_found`. A `send` draft takes the
+`send` body and a `reply` draft the `reply` body: `to`, `cc`, `bcc`, `subject` and `reply_to` on a
+reply draft, and `reply_all` on a send draft, are 400 `bad_request`, exactly as those fields are
+absent from the matching send endpoint. `headers` is not a draft field.
+
+The body is validated on every write by building the message the send would build, so a draft that
+could never be sent — no recipient, no `text` and no `html`, a `from` that is not the inbox, an
+invalid address, too many recipients or attachments, over 5 MiB — fails at create or update with
+the error the send itself would return. The verification gate is not applied at write time: an
+unverified account may hold a draft addressed to anyone and gets `message_rejected` when it is
+sent.
+
+Statuses are `draft`, `scheduled`, `sending`, `sent` and `failed`.
+
+| From | To | Cause |
+| --- | --- | --- |
+| — | `draft` | create without `send_at` |
+| — | `scheduled` | create with `send_at` |
+| `draft` | `scheduled` | update setting a future `send_at` |
+| `scheduled` | `draft` | update setting `send_at` to null |
+| `draft`, `scheduled`, `failed` | `sending` | the drain claims a due draft, or `/send` is called |
+| `sending` | `sent` | the send succeeded; `sent_message_id` is set |
+| `sending` | `failed` | the send failed; `error` is set |
+| `failed` | `scheduled` | update setting a future `send_at` |
+
+`send_at` is Unix milliseconds and must be in the future; a past or non-integer value is 400
+`bad_request`. A cron trigger runs every minute, so a scheduled draft is sent in the minute after
+`send_at`, never before it; scheduling is minute-granular in practice. Each run takes at most 50 due
+drafts, oldest `send_at` first, and claims each one with a conditional update, so two overlapping
+runs cannot send the same draft twice. Delivery is at least once in principle: a Worker killed
+between the send and the status write leaves the draft `sending`, which is never picked up again and
+is visible for an operator to inspect.
+
+A `sent` or `sending` draft cannot be updated and answers 409 `conflict`; a `sending` draft cannot
+be deleted. A failed draft is kept for inspection with its `error`, is not retried, and is
+re-scheduled by an update carrying a new `send_at`. Any successful update clears `error`, and a
+`send_at` already in the past at update time is dropped rather than firing immediately, leaving the
+draft unscheduled.
+
+`POST .../send` sends the draft now whatever its `send_at`, through the same `sendMessage` and
+`replyToMessage` path the send and reply endpoints use, so limits, the verification gate, labels and
+threading are identical. It returns the sent message and marks the draft `sent`. A failed send
+marks the draft `failed` and returns the error.
+
+Drafts are ordered by `updated_at` descending. `status` filters the list and must be one of the five
+statuses.
+
 ### Attachments
 
 | Method | Path | Returns |
@@ -345,6 +416,12 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `batch_update_labels` | `inbox_id`, `message_ids`, `add?`, `remove?` |
 | `batch_delete_messages` | `inbox_id`, `message_ids` |
 | `get_attachment` | `inbox_id`, `message_id`, `attachment_id` |
+| `create_draft` | `inbox_id`, `kind?`, `parent_message_id?`, `to?`, `cc?`, `bcc?`, `subject?`, `text?`, `html?`, `from?`, `reply_to?`, `reply_all?`, `attachments?`, `send_at?` |
+| `list_drafts` | `inbox_id`, `status?`, `limit?`, `page_token?` |
+| `get_draft` | `inbox_id`, `draft_id` |
+| `update_draft` | `inbox_id`, `draft_id`, any body field, `send_at?` |
+| `delete_draft` | `inbox_id`, `draft_id` |
+| `send_draft` | `inbox_id`, `draft_id` |
 | `create_api_key` | `name?` |
 
 Every tool returns its result as JSON in a single text content block. An `AppError` becomes a tool
@@ -365,3 +442,4 @@ Differences from REST, all deliberate:
 - `labels` on `list_messages` accepts a string or an array; `since`, `before`, `limit`, and
   `timeout` are numbers.
 - `send_message` has no `headers` argument.
+- `update_draft` takes `send_at` as a number or null; null unschedules the draft.

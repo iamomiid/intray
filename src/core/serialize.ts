@@ -2,11 +2,11 @@ import type {
   AccountRow,
   ApiKeyRow,
   AttachmentRow,
+  DraftRow,
   InboxRow,
   MessageRow,
   ThreadRow,
 } from "../db/rows";
-
 export interface AddressObject {
   address: string;
   name: string | null;
@@ -60,6 +60,55 @@ export interface AttachmentObject {
 
 export interface AttachmentDetailObject extends AttachmentObject {
   text: string | null;
+}
+
+export interface DraftAttachment {
+  filename: string;
+  content_type: string;
+  size: number;
+  key: string;
+}
+
+export interface DraftBody {
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string | null;
+  text: string | null;
+  html: string | null;
+  from: string | null;
+  reply_to: string | null;
+  reply_all: boolean;
+  attachments: DraftAttachment[];
+}
+
+export interface DraftAttachmentObject {
+  filename: string;
+  content_type: string;
+  size: number;
+}
+
+export interface DraftObject {
+  draft_id: string;
+  inbox_id: string;
+  kind: string;
+  parent_message_id: string | null;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string | null;
+  text: string | null;
+  html: string | null;
+  from: string | null;
+  reply_to: string | null;
+  reply_all: boolean;
+  attachments: DraftAttachmentObject[];
+  send_at: number | null;
+  status: string;
+  sent_message_id: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface MessageObject {
@@ -186,6 +235,98 @@ export function toAttachment(row: AttachmentRow): AttachmentObject {
 
 export function toAttachmentDetail(row: AttachmentRow): AttachmentDetailObject {
   return { ...toAttachment(row), text: row.text };
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function optionalText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function parseDraftAttachments(value: unknown): DraftAttachment[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const attachments: DraftAttachment[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const candidate = entry as {
+      filename?: unknown;
+      content_type?: unknown;
+      size?: unknown;
+      key?: unknown;
+    };
+    if (
+      typeof candidate.filename === "string" &&
+      typeof candidate.content_type === "string" &&
+      typeof candidate.key === "string"
+    ) {
+      attachments.push({
+        filename: candidate.filename,
+        content_type: candidate.content_type,
+        size: typeof candidate.size === "number" ? candidate.size : 0,
+        key: candidate.key,
+      });
+    }
+  }
+  return attachments;
+}
+
+export function parseDraftBody(raw: string): DraftBody {
+  const parsed = parseJson(raw);
+  const body = (typeof parsed === "object" && parsed !== null ? parsed : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    to: stringArray(body.to),
+    cc: stringArray(body.cc),
+    bcc: stringArray(body.bcc),
+    subject: optionalText(body.subject),
+    text: optionalText(body.text),
+    html: optionalText(body.html),
+    from: optionalText(body.from),
+    reply_to: optionalText(body.reply_to),
+    reply_all: body.reply_all === true,
+    attachments: parseDraftAttachments(body.attachments),
+  };
+}
+
+export function toDraft(row: DraftRow): DraftObject {
+  const body = parseDraftBody(row.body_json);
+  return {
+    draft_id: row.draft_id,
+    inbox_id: row.inbox_id,
+    kind: row.kind,
+    parent_message_id: row.parent_message_id,
+    to: body.to,
+    cc: body.cc,
+    bcc: body.bcc,
+    subject: body.subject,
+    text: body.text,
+    html: body.html,
+    from: body.from,
+    reply_to: body.reply_to,
+    reply_all: body.reply_all,
+    attachments: body.attachments.map((attachment) => ({
+      filename: attachment.filename,
+      content_type: attachment.content_type,
+      size: attachment.size,
+    })),
+    send_at: row.send_at,
+    status: row.status,
+    sent_message_id: row.sent_message_id,
+    error: row.error,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
 }
 
 export function toMessage(row: MessageRow, attachments: AttachmentRow[]): MessageObject {

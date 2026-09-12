@@ -1,3 +1,4 @@
+import { drainDueDrafts } from "./core/drafts";
 import { handleEmail } from "./email/inbound";
 import type { Env } from "./env";
 import { app } from "./http/app";
@@ -12,4 +13,7 @@ export default {
     return app.fetch(request, env, ctx);
   },
   email: handleEmail,
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await drainDueDrafts(env);
+  },
 } satisfies ExportedHandler<Env>;
