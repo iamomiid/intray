@@ -16,13 +16,14 @@ import {
   updateMember,
 } from "../src/core/orgs";
 import type { Principal } from "../src/core/principal";
-import { toAccount, toAttachmentDetail } from "../src/core/serialize";
+import { toAccount, toAttachmentDetail, toDomain } from "../src/core/serialize";
 import { addSuppression, listSuppressions } from "../src/core/suppressions";
 import { getThread, listThreads } from "../src/core/threads";
 import { getUsage } from "../src/core/usage";
 import { createWebhook, getWebhook, listWebhooks } from "../src/core/webhooks";
 import { insertAccount } from "../src/db/accounts";
 import { listAttachments } from "../src/db/attachments";
+import { insertDomain, updateDomain } from "../src/db/domains";
 import { insertInbox } from "../src/db/inboxes";
 import { type InboundResult, ingestInbound } from "../src/email/inbound";
 import {
@@ -32,6 +33,8 @@ import {
   auditPage,
   createdApiKeyObject,
   createdWebhookObject,
+  domainObject,
+  domainPage,
   draftObject,
   draftPage,
   inboxObject,
@@ -185,6 +188,45 @@ it("parses a serialized suppression against its schema", async () => {
   expect(added.reason).toBe("manual");
   expect(added.message_id).toBeNull();
   expect(suppressionPage.parse(await listSuppressions(env, principal, {})).items).toHaveLength(1);
+});
+
+it("parses a serialized domain against its schema", async () => {
+  await seed();
+  const at = 1_700_000_000_000;
+  await insertDomain(env.DB, {
+    domain: "agents.example.com",
+    accountId: ACCOUNT_ID,
+    zoneId: "zone_schemas_placeholder",
+    status: "pending",
+    at,
+  });
+  const row = await updateDomain(env.DB, {
+    domain: "agents.example.com",
+    sendingTag: "sub_schemas_placeholder",
+    status: "verified",
+    recordsJson: JSON.stringify([
+      { type: "MX", name: "agents.example.com", content: "route1.mx.cloudflare.net", priority: 1 },
+      { type: "TXT", name: "agents.example.com", content: "v=spf1 ~all", present: true },
+    ]),
+    error: null,
+    verifiedAt: at,
+    at,
+  });
+
+  const domain = domainObject.parse(toDomain(row));
+
+  expect(domain.status).toBe("verified");
+  expect(domain.records).toEqual([
+    {
+      type: "MX",
+      name: "agents.example.com",
+      content: "route1.mx.cloudflare.net",
+      priority: 1,
+      present: false,
+    },
+    { type: "TXT", name: "agents.example.com", content: "v=spf1 ~all", present: true },
+  ]);
+  expect(domainPage.parse({ items: [toDomain(row)], next_page_token: null }).items).toHaveLength(1);
 });
 
 it("parses a serialized org, member, invite and audit entry against their schemas", async () => {

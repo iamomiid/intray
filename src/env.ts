@@ -10,6 +10,7 @@ export interface Env {
   INBOX_WAITER?: DurableObjectNamespace<InboxWaiter>;
   MAIL_DOMAINS: string;
   INBOX_LIMIT: string;
+  DOMAIN_LIMIT?: string;
   PUBLIC_URL: string;
   ALLOWED_SIGNUP_EMAILS: string;
   QUOTA_MESSAGES_SENT_PER_MONTH?: string;
@@ -47,6 +48,7 @@ export interface RoutingConfig {
 export interface Config {
   domains: string[];
   inboxLimit: number;
+  domainLimit: number;
   publicUrl: string;
   allowedSignupEmails: string[];
   quotas: Quotas;
@@ -55,6 +57,8 @@ export interface Config {
 }
 
 export const DEFAULT_WORKER_NAME = "intray";
+
+export const DEFAULT_DOMAIN_LIMIT = 5;
 
 export const DEFAULT_SPAM_LABEL_THRESHOLD = 50;
 
@@ -105,9 +109,12 @@ function quota(raw: unknown): number | null {
 
 export function config(env: Env): Config {
   const inboxLimit = Number.parseInt(env.INBOX_LIMIT, 10);
+  const domainLimit = Number.parseInt(text(env.DOMAIN_LIMIT), 10);
   return {
     domains: splitList(env.MAIL_DOMAINS),
     inboxLimit: Number.isFinite(inboxLimit) && inboxLimit > 0 ? inboxLimit : 10,
+    domainLimit:
+      Number.isFinite(domainLimit) && domainLimit > 0 ? domainLimit : DEFAULT_DOMAIN_LIMIT,
     publicUrl: env.PUBLIC_URL.replace(/\/+$/, ""),
     allowedSignupEmails: splitList(env.ALLOWED_SIGNUP_EMAILS),
     quotas: {

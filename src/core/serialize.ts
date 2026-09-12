@@ -3,6 +3,7 @@ import type {
   ApiKeyRow,
   AttachmentRow,
   AuditRow,
+  DomainRow,
   DraftRow,
   InboxRow,
   InviteRow,
@@ -68,6 +69,24 @@ export interface InviteObject {
   invited_by: string;
   created_at: number;
   accepted_at: number | null;
+}
+
+export interface DomainRecordObject {
+  type: string;
+  name: string;
+  content: string;
+  priority?: number;
+  present: boolean;
+}
+
+export interface DomainObject {
+  domain: string;
+  status: string;
+  records: DomainRecordObject[];
+  error: string | null;
+  verified_at: number | null;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface AuditObject {
@@ -306,6 +325,45 @@ export function toAuditEntry(row: AuditRow): AuditObject {
     action: row.action,
     target: row.target,
     created_at: row.created_at,
+  };
+}
+
+export function parseDomainRecords(raw: string): DomainRecordObject[] {
+  const parsed = parseJson(raw);
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return [];
+    }
+    const source = entry as Record<string, unknown>;
+    const type = typeof source.type === "string" ? source.type : "";
+    const name = typeof source.name === "string" ? source.name : "";
+    if (type === "" || name === "") {
+      return [];
+    }
+    const record = {
+      type,
+      name,
+      content: typeof source.content === "string" ? source.content : "",
+      present: source.present === true,
+    };
+    return typeof source.priority === "number"
+      ? [{ ...record, priority: source.priority }]
+      : [record];
+  });
+}
+
+export function toDomain(row: DomainRow): DomainObject {
+  return {
+    domain: row.domain,
+    status: row.status,
+    records: parseDomainRecords(row.records_json),
+    error: row.error,
+    verified_at: row.verified_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
   };
 }
 

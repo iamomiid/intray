@@ -36,6 +36,7 @@ const INBOX_ID = "agent@intray.example";
 const ONBOARDING_TOOLS = ["read_onboarding_docs", "signup", "verify"];
 
 const AGENT_TOOLS = [
+  "add_domain",
   "add_suppression",
   "auth_me",
   "batch_delete_messages",
@@ -61,6 +62,7 @@ const AGENT_TOOLS = [
   "get_usage",
   "get_webhook",
   "list_audit",
+  "list_domains",
   "list_drafts",
   "list_inboxes",
   "list_invites",
@@ -71,6 +73,7 @@ const AGENT_TOOLS = [
   "list_threads",
   "list_webhooks",
   "provision_inbox",
+  "remove_domain",
   "remove_member",
   "remove_suppression",
   "reply_to_message",
@@ -83,6 +86,7 @@ const AGENT_TOOLS = [
   "update_message_labels",
   "update_thread_labels",
   "update_webhook",
+  "verify_domain",
   "wait_for_message",
 ];
 
@@ -216,14 +220,14 @@ it("signs up over MCP and unlocks the authenticated tool set", async () => {
   expect(created.inbox_id.endsWith("@intray.example")).toBe(true);
   const names = await toolNames(created.api_key);
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(48);
+  expect(names).toHaveLength(52);
 });
 
 it("serves the full tool set to the operator token", async () => {
   const names = await toolNames(OPERATOR_TOKEN);
 
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(48);
+  expect(names).toHaveLength(52);
 
   const seen = payload<{ account: { account_id: string; verified: boolean }; key_id: string }>(
     await callTool("auth_me", {}, OPERATOR_TOKEN),

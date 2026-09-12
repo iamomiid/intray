@@ -73,6 +73,7 @@
   "vars": {
     "MAIL_DOMAINS": "",
     "INBOX_LIMIT": "10",
+    "DOMAIN_LIMIT": "5",
     "PUBLIC_URL": "",
     "ALLOWED_SIGNUP_EMAILS": "",
     "QUOTA_MESSAGES_SENT_PER_MONTH": "",

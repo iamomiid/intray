@@ -3,6 +3,7 @@ import { WEBHOOK_EVENTS } from "../core/webhooks";
 import {
   attachmentTextStatus,
   auditAction,
+  domainStatus,
   draftKind,
   draftStatus,
   messageDirection,
@@ -215,6 +216,28 @@ export const suppressionObject = z.strictObject({
   last_seen_at: z.number().describe("when the address last bounced or was last re-suppressed"),
 });
 
+export const domainRecordObject = z.strictObject({
+  type: z.string(),
+  name: z.string(),
+  content: z.string(),
+  priority: z.number().optional(),
+  present: z.boolean().describe("whether the record is in the zone as Cloudflare wants it"),
+});
+
+export const domainObject = z.strictObject({
+  domain: z.string(),
+  status: domainStatus.describe(
+    "pending until sending and routing both verify, verified once they do, failed when the last Cloudflare call errored",
+  ),
+  records: z
+    .array(domainRecordObject)
+    .describe("the DNS records this domain needs, as Cloudflare last reported them"),
+  error: z.string().nullable().describe("the last Cloudflare failure, null once one succeeds"),
+  verified_at: z.number().nullable(),
+  created_at: z.number(),
+  updated_at: z.number(),
+});
+
 export const createdWebhookObject = webhookObject.extend({
   secret: z.string().describe("the signing secret, returned only by the call that creates it"),
 });
@@ -250,6 +273,8 @@ export const draftPage = pageOf(draftObject);
 export const webhookPage = pageOf(webhookObject);
 
 export const suppressionPage = pageOf(suppressionObject);
+
+export const domainPage = pageOf(domainObject);
 
 export const messageList = z.strictObject({ items: z.array(messageObject) });
 

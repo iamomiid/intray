@@ -8,6 +8,7 @@ const TABLES = [
   "threads",
   "drafts",
   "inboxes",
+  "domains",
   "suppressions",
   "webhooks",
   "usage",

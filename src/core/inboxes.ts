@@ -1,3 +1,4 @@
+import { getDomainForAccount } from "../db/domains";
 import {
   countInboxes,
   deleteInbox as deleteInboxRow,
@@ -19,6 +20,7 @@ import { AppError, badRequest, conflict, notFound } from "../lib/errors";
 import { clampLimit, decodeCursor, type Page, page } from "../lib/pagination";
 import { now } from "../lib/time";
 import { recordAccountAudit } from "./audit";
+import { resolveInboxDomain } from "./domains";
 import { deleteObjects } from "./objects";
 import {
   allowsInbox,
@@ -54,15 +56,6 @@ function optionalText(value: string | null | undefined): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
-function resolveDomain(env: Env, requested: string | null): string {
-  const { domains } = config(env);
-  const domain = requested ?? domains[0];
-  if (domain === undefined || !domains.includes(domain)) {
-    throw badRequest("domain not served");
-  }
-  return domain;
-}
-
 function resolveUsername(requested: string | null): string {
   const username = (requested ?? randomUsername()).toLowerCase();
   if (!isValidUsername(username)) {
@@ -80,23 +73,27 @@ export async function createInbox(
   input: CreateInboxInput = {},
 ): Promise<InboxObject> {
   requireFullScope(principal);
-  const domain = resolveDomain(env, optionalText(input.domain)?.toLowerCase() ?? null);
+  const domain = await resolveInboxDomain(
+    env,
+    principal.account.id,
+    optionalText(input.domain)?.toLowerCase() ?? null,
+  );
   const username = resolveUsername(optionalText(input.username));
   const count = await countInboxes(env.DB, principal.account.id);
   if (count >= config(env).inboxLimit) {
     throw conflict("inbox limit reached");
   }
-  const inboxId = `${username}@${domain}`;
+  const inboxId = `${username}@${domain.name}`;
   const existing = await getInboxRow(env.DB, inboxId);
   if (existing !== null) {
     throw new AppError(409, "inbox_taken", "inbox already exists");
   }
-  const routingRuleId = await createRoutingRule(env, inboxId);
+  const routingRuleId = await createRoutingRule(env, inboxId, domain.zoneId);
   const row = await insertInbox(env.DB, {
     inboxId,
     accountId: principal.account.id,
     username,
-    domain,
+    domain: domain.name,
     displayName: optionalText(input.display_name),
     routingRuleId,
     createdAt: now(),
@@ -153,7 +150,8 @@ export async function deleteInbox(
   inboxId: string,
 ): Promise<DeletedInbox> {
   const inbox = await requireInbox(env, principal, inboxId);
-  await deleteRoutingRule(env, inbox.routing_rule_id);
+  const custom = await getDomainForAccount(env.DB, principal.account.id, inbox.domain);
+  await deleteRoutingRule(env, inbox.routing_rule_id, custom?.zone_id ?? null);
   const released = await storageForInbox(env.DB, inbox.inbox_id);
   const removed = await deleteInboxRow(env.DB, principal.account.id, inbox.inbox_id);
   if (removed === null) {
