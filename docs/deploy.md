@@ -98,6 +98,10 @@ Flags:
   `550 no such inbox`. `per_inbox` gives every inbox its own Email Routing rule and turns the
   catch-all off, so the domain accepts mail only for addresses that exist and any other address on
   the zone stays free for something else. See **Per-inbox routing** below.
+- `--transport` — optional, `cloudflare`, `smtp`, `ses` or `resend`. Writes `MAIL_TRANSPORT`;
+  omitted, the value already in `wrangler.jsonc` is kept and a fresh deployment is `cloudflare`.
+  Anything but `cloudflare` skips the Email Routing and Email Sending steps and checks that
+  provider's Worker secrets instead. See **Transports** below.
 - `--dmarc-reports` — optional. Turns on Cloudflare DMARC Management for the zone, which collects
   the aggregate DMARC reports into Cloudflare's dashboard. It does not deliver them to an inbox.
   Off without the flag. See **DMARC reports** below.
@@ -191,16 +195,22 @@ correct prints `skipped`.
 7. **Vars** — sets `PUBLIC_URL` to the Worker's `workers.dev` URL, read from the account's Workers
    subdomain, defaults `INBOX_LIMIT` to `10`, and writes `ALLOWED_SIGNUP_EMAILS` from
    `--allow-signup` or leaves the current value alone, defaulting it to `""`. `MAIL_DOMAINS` is not
-   written here; see step 15.
+   written here; see step 17.
 8. **Deploy** — `wrangler deploy`, reads the `workers.dev` URL from the output. Deploys a second
    time if `PUBLIC_URL` did not already match it.
 9. **Operator token** — with `--operator-token`, checks `wrangler secret list` for `OPERATOR_TOKEN`
    and puts the secret over stdin unless it already exists and no explicit value was given.
    Replacing one that already exists needs approval 5. Skipped without the flag.
-10. **Zone** — looks up `--domain`, then each parent in turn, until `/zones?name=` matches. Fails
+10. **Mail transport** — writes `MAIL_TRANSPORT` from `--transport`, or keeps the current value,
+    and deploys again if it changed.
+11. **Transport secrets** — for a transport other than `cloudflare`, reads `wrangler secret list`
+    and reports any of that provider's secrets that are not set, with the
+    `pnpm wrangler secret put` line for each. It reports; it never fails the run, because the
+    secrets can be put after the deploy. Skipped for `cloudflare`, which needs none.
+12. **Zone** — looks up `--domain`, then each parent in turn, until `/zones?name=` matches. Fails
     listing every name it tried if none is a zone in this account. When the matched zone name is
     not the given domain the rest of the run is in **subdomain mode**.
-11. **Email Routing** — apex mode: enables routing with
+13. **Email Routing** — apex mode: enables routing with
     `POST /zones/{zone}/email/routing/enable`, which adds the apex MX, SPF and DKIM records
     (approval 1). Subdomain mode: turns the setting on with
     `PATCH /zones/{zone}/email/routing {enabled, skip_wizard}` and reads it back, which writes no
@@ -211,30 +221,34 @@ correct prints `skipped`.
     be enabled in the dashboard without accepting the suggested apex records. Then it points the
     catch-all rule at the `intray` Worker (approval 3 when a different rule is already enabled).
     The catch-all is zone-level and covers the subdomain's mail too.
-12. **Email Sending** — onboards the domain as a sending subdomain, applies the DNS records
+14. **Email Sending** — onboards the domain as a sending subdomain, applies the DNS records
     (approval 4), and polls the record status every 5 s for up to 3 minutes until it is clean.
     Stops with the list of conflicting records if existing DNS is in the way. The endpoint takes an
     apex or a subdomain, so this is the same in both modes.
-13. **DMARC reports** — with `--dmarc-reports`, turns on Cloudflare DMARC Management for the zone
+15. **DMARC reports** — with `--dmarc-reports`, turns on Cloudflare DMARC Management for the zone
     (approval 6). Skipped without the flag, skipped in subdomain mode with
     `apex only; would change the zone apex`, and skipped with a message when the credentials are
     the wrangler login rather than an API token. See **DMARC reports** below.
-14. **Destination address** — with `--email`, registers it as a routing destination. Cloudflare
+16. **Destination address** — with `--email`, registers it as a routing destination. Cloudflare
     emails a verification link that has to be clicked.
-15. **Mail domain** — writes `MAIL_DOMAINS` to `--domain` exactly, subdomain included, and deploys
+17. **Mail domain** — writes `MAIL_DOMAINS` to `--domain` exactly, subdomain included, and deploys
     again if the value changed.
-16. **Routing mode** — writes `ROUTING_MODE`, and in `per_inbox` mode `CLOUDFLARE_ZONE_ID` and
+18. **Routing mode** — writes `ROUTING_MODE`, and in `per_inbox` mode `CLOUDFLARE_ZONE_ID` and
     `WORKER_NAME` as well, then deploys again if anything changed.
-17. **Routing token** — in `per_inbox` mode, puts `CLOUDFLARE_API_TOKEN` from the environment or
+19. **Routing token** — in `per_inbox` mode, puts `CLOUDFLARE_API_TOKEN` from the environment or
     `.env` into the `ROUTING_API_TOKEN` Worker secret unless that secret already exists. Skipped
     with an explanation when there is no API token: the OAuth login from `pnpm run login` cannot
     mint one, so the operator creates it. Skipped entirely in `catch_all` mode.
-18. **Routing rules** — in `per_inbox` mode, reconciles the zone's rules against the deployment's
+20. **Routing rules** — in `per_inbox` mode, reconciles the zone's rules against the deployment's
     inboxes, read with `wrangler d1 execute --remote`. Creates a rule for an inbox that has none and
     writes the id back, adopts an existing rule an inbox row does not know about, and deletes a rule
     that targets the Worker for an address with no inbox. Disables the catch-all last, once the
     rules exist, when this run is the switch (approval 7). Skipped in `catch_all` mode, where step
-    11 keeps the catch-all pointed at the Worker.
+    13 keeps the catch-all pointed at the Worker.
+
+Steps 13 and 14 are skipped with `MAIL_TRANSPORT is <name>` when the transport is not `cloudflare`:
+inbound then arrives at `POST /v1/inbound` and outbound leaves through the provider. The Zone step
+still runs, so the mail domain is still expected to be a zone in the logged-in account.
 
 The mail domain is written last, after the mail steps have succeeded, so a declined DNS change or a
 failed sending onboarding never leaves a deployed Worker handing out addresses on a domain that
@@ -325,6 +339,60 @@ how many domains one account may register.
 
 Removing a domain requires that its inboxes are gone first; the call then deletes the DNS records
 it wrote and the Email Sending subdomain, and leaves the zone in place.
+
+## Transports
+
+`MAIL_TRANSPORT` picks how mail leaves the Worker. `cloudflare` is the default and the only one
+that needs no secrets. The others are set with `pnpm run setup --transport <name>`, which writes
+the var, skips the Email Routing and Email Sending steps, and lists the secrets that are missing.
+Inbound then no longer arrives through Email Routing, so point the provider at `POST /v1/inbound`
+and set `INBOUND_SECRET`; `docs/api.md` has both endpoints and the per-transport error mapping.
+
+Whichever transport is chosen, publish SPF, DKIM and DMARC for the sending domain at that provider.
+Nothing in intray checks them and mail sent without them is filtered.
+
+**cloudflare.** Email Routing inbound, the `send_email` binding outbound, no secrets, nothing else
+to set. This is the deployment the rest of this guide describes.
+
+**smtp.** Any submission server, over `cloudflare:sockets`.
+
+```
+pnpm wrangler secret put SMTP_HOST
+pnpm wrangler secret put SMTP_USERNAME
+pnpm wrangler secret put SMTP_PASSWORD
+```
+
+`SMTP_PORT` and `SMTP_SECURE` are optional: `SMTP_SECURE` is `starttls`, the default, or `tls`, and
+`SMTP_PORT` defaults to 587 for `starttls` and 465 for `tls`. Port 25 is blocked outbound from
+Workers, so the server has to accept submission on 465 or 587. Inbound is the provider's own
+problem: a self-hosted MTA can pipe each message to `POST /v1/inbound`.
+
+**ses.** SES v2, signed with SigV4 in the Worker, so no AWS SDK is bundled.
+
+```
+pnpm wrangler secret put AWS_ACCESS_KEY_ID
+pnpm wrangler secret put AWS_SECRET_ACCESS_KEY
+pnpm wrangler secret put AWS_REGION
+```
+
+`AWS_SESSION_TOKEN` is optional and only needed for temporary credentials. The IAM user or role
+needs `ses:SendEmail`, and the sending identity has to be verified in that region. For inbound,
+have SES deliver to S3 or SNS and have that call `POST /v1/inbound`; for bounces, subscribe an SNS
+topic to `POST /v1/inbound/bounces`, which answers the subscription confirmation on its own.
+
+**resend.**
+
+```
+pnpm wrangler secret put RESEND_API_KEY
+```
+
+Verify the sending domain in Resend first, or every send comes back 503 `sender_not_verified`.
+Point Resend's inbound and `email.bounced` webhooks at `POST /v1/inbound` and
+`POST /v1/inbound/bounces`.
+
+Webhook signatures are not verified on either inbound endpoint. `INBOUND_SECRET` is the whole of
+the authentication, so keep it out of the repo, send it as `Authorization: Bearer <secret>` or
+`x-inbound-secret`, and rotate it by putting a new one.
 
 ## DMARC reports
 
@@ -446,12 +514,24 @@ company mode goes in the same file:
 ```
 OPERATOR_TOKEN=op_local_development_token_at_least_32_chars
 ADMIN_SECRET=admin_local_development_secret_at_least_32_chars
+INBOUND_SECRET=inbound_local_development_secret_at_least_32_chars
 ```
 
 Inject an inbound message. The body must be raw RFC 5322 and must include a `Message-ID` header:
 
 ```
 curl -X POST 'http://localhost:8787/cdn-cgi/local/email?from=sender@example.net&to=agent@intray.example' \
+  --data-binary @test/fixtures/plain.eml
+```
+
+The same message through the provider endpoint, which is the path a non-Cloudflare transport uses:
+
+```
+curl -X POST http://localhost:8787/v1/inbound \
+  -H "authorization: Bearer $INBOUND_SECRET" \
+  -H 'content-type: message/rfc822' \
+  -H 'x-envelope-from: sender@example.net' \
+  -H 'x-envelope-to: agent@intray.example' \
   --data-binary @test/fixtures/plain.eml
 ```
 
@@ -465,9 +545,9 @@ claude mcp add --transport http intray http://localhost:8787/mcp --header "Autho
 ```
 
 The test suite pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`, the three
-`QUOTA_*` vars and
-`OPERATOR_TOKEN` in `vitest.config.ts`, so changing those vars in `wrangler.jsonc` does not move
-the suite.
+`QUOTA_*` vars, `MAIL_TRANSPORT`,
+`OPERATOR_TOKEN` and `INBOUND_SECRET` in `vitest.config.ts`, so changing those vars in
+`wrangler.jsonc` does not move the suite.
 
 ## Rollback
 
@@ -531,6 +611,8 @@ Edit `vars` in `wrangler.jsonc`:
 - `SPAM_REJECT_THRESHOLD` — inbound spam score at or above which the message is refused with
   `550 rejected as spam`, as a string. Default `90`; `0` never rejects. Executable attachments are
   refused whatever this says.
+- `MAIL_TRANSPORT` — `cloudflare`, `smtp`, `ses` or `resend`. Leave it `cloudflare` unless you are
+  following **Transports** below.
 - `ROUTING_MODE` — `catch_all` or `per_inbox`. Leave it `catch_all` unless you are following
   **Per-inbox routing** above.
 - `CLOUDFLARE_ZONE_ID` and `WORKER_NAME` — only read in `per_inbox` mode; the zone the rules are
@@ -556,7 +638,15 @@ pnpm wrangler secret put ROUTING_API_TOKEN
 pnpm wrangler secret put ADMIN_SECRET
 ```
 
-Use at least 32 characters; a shorter value is ignored and the bootstrap stays closed.
+`INBOUND_SECRET` is the last one, needed only by a deployment whose inbound mail arrives over
+HTTP rather than through Email Routing:
+
+```
+pnpm wrangler secret put INBOUND_SECRET
+```
+
+Use at least 32 characters for all three; a shorter value is ignored, and the bootstrap or the
+inbound endpoints stay closed.
 
 ### 6. Deploy
 

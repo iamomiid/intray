@@ -8,6 +8,7 @@ import {
   upsertSuppression,
 } from "../db/suppressions";
 import type { BounceRecipient } from "../email/bounce";
+import type { ProviderBounceRecipient } from "../email/notifications";
 import type { Env } from "../env";
 import { isValidEmail, normalizeAddress } from "../lib/address";
 import { badRequest, notFound } from "../lib/errors";
@@ -168,7 +169,7 @@ async function storeBounce(
   at: number,
 ): Promise<SuppressionRow | null> {
   if (recipient.kind === "soft") {
-    await recordSoftBounce(env.DB, { accountId, address: recipient.address, at });
+    await recordSoftBounce(env.DB, { accountId, address: recipient.address, at, source: "dsn" });
     return null;
   }
   return upsertSuppression(env.DB, {
@@ -180,6 +181,37 @@ async function storeBounce(
     messageId,
     at,
   });
+}
+
+export async function recordProviderBounce(
+  env: Env,
+  accountId: string,
+  recipients: ProviderBounceRecipient[],
+): Promise<number> {
+  const at = now();
+  const stored = await Promise.all(
+    recipients.map(async (recipient) => {
+      const address = normalizeAddress(recipient.address);
+      if (!isValidEmail(address)) {
+        return 0;
+      }
+      if (recipient.kind === "soft") {
+        await recordSoftBounce(env.DB, { accountId, address, at, source: "provider" });
+        return 1;
+      }
+      await upsertSuppression(env.DB, {
+        accountId,
+        address,
+        reason: "provider",
+        source: "provider",
+        detail: normalizeDetail(recipient.detail),
+        messageId: null,
+        at,
+      });
+      return 1;
+    }),
+  );
+  return stored.reduce<number>((total, count) => total + count, 0);
 }
 
 export async function recordBounce(

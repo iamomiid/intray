@@ -1,6 +1,14 @@
+export function base64Encode(bytes: Uint8Array): string {
+  return btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
+}
+
+export function base64Decode(text: string): Uint8Array {
+  const binary = atob(text.replace(/\s+/g, ""));
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
 export function base64UrlEncode(bytes: Uint8Array): string {
-  const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return base64Encode(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export function base64UrlDecode(text: string): Uint8Array {

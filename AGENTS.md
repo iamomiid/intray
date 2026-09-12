@@ -53,7 +53,7 @@ src/index.ts            fetch (/mcp then Hono) and email exports
 src/env.ts              Env bindings interface and config(env)
 src/http/               Hono app, auth middleware, /v1 routes
 src/mcp/                MCP handler, server factory, tool registration
-src/email/              inbound handler, threading, outbound builders
+src/email/              inbound handler, threading, outbound builders, mail transports
 src/core/               service layer: the only place with business logic
 src/schemas/            zod shapes shared by the MCP tools and the OpenAPI document
 src/db/                 typed D1 helpers
@@ -73,11 +73,12 @@ and `email_sending:write`, which the default `wrangler login` omits.
 ```
 pnpm run setup --domain agents.example.com [--email you@example.com]
   [--allow-signup you@example.com] [--operator-token [value]] [--routing catch_all|per_inbox]
-  [--dmarc-reports] [--accept-changes] [--yes]
+  [--transport cloudflare|smtp|ses|resend] [--dmarc-reports] [--accept-changes] [--yes]
 ```
 
 The setup runs the whole of `docs/deploy.md` idempotently: D1, R2, migrations, vars, deploy,
-operator token, Email Routing, Email Sending, DMARC reports, destination address, mail domain,
+operator token, mail transport and its secrets, Email Routing, Email Sending, DMARC reports,
+destination address, mail domain,
 routing mode and, in `per_inbox` mode, the routing token and one Email Routing rule per inbox. It
 needs no API token: it uses the OAuth token from `pnpm run login`, and `CLOUDFLARE_API_TOKEN` only
 if one is set. `--dmarc-reports` is the one step that an API token can do and the OAuth token

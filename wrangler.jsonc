@@ -82,6 +82,7 @@
     "SPAM_LABEL_THRESHOLD": "50",
     "SPAM_REJECT_THRESHOLD": "90",
     "ROUTING_MODE": "catch_all",
+    "MAIL_TRANSPORT": "cloudflare",
     "CLOUDFLARE_ZONE_ID": "",
     "WORKER_NAME": "intray"
   },

@@ -97,6 +97,15 @@ describe("parseArgs", () => {
     ]);
   });
 
+  it("reads the transport flag", () => {
+    expect(parseArgs(["--domain", "example.com"]).transport).toBe("");
+    expect(parseArgs(["--domain", "example.com", "--transport", "SES"]).transport).toBe("ses");
+    expect(parseArgs(["--domain=example.com", "--transport=resend"]).transport).toBe("resend");
+    expect(parseArgs(["--domain", "example.com", "--transport", "postal"]).errors).toEqual([
+      "--transport must be one of cloudflare, smtp, ses, resend: postal",
+    ]);
+  });
+
   it("reads the dmarc reports flag", () => {
     expect(parseArgs(["--domain", "example.com"]).dmarcReports).toBe(false);
     const args = parseArgs(["--domain", "example.com", "--dmarc-reports"]);

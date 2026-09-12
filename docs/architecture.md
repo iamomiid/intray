@@ -11,11 +11,14 @@ everything else to the Hono app, and exports the `email()` handler that Email Ro
 `queue()` handler that drains webhook deliveries.
 
 ```
-Email Routing rule/catch-all ──► email() ──► postal-mime ──► D1 (thread and message rows)
-                                                     └─► R2 (raw .eml, attachments)
+Email Routing rule/catch-all ─────► email()        ─┐
+POST /v1/inbound (provider, MTA) ──► receiveInbound ─┴─► ingestInbound ──► postal-mime
+                                                            ├─► D1 (thread and message rows)
+                                                            └─► R2 (raw .eml, attachments)
+POST /v1/inbound/bounces (provider) ──► recordProviderBounce ──► D1 (suppressions)
 HTTP /v1/*  (Hono)  ─┐
                      ├──► src/core/* ──► src/db/* ──► D1
-MCP  /mcp           ─┘                ├─► R2, env.EMAIL.send
+MCP  /mcp           ─┘                ├─► R2, MailTransport ──► EMAIL | SMTP | SES | Resend
                                       └─► env.WEBHOOKS ──► queue() ──► subscriber's endpoint
 ```
 
@@ -24,7 +27,7 @@ MCP  /mcp           ─┘                ├─► R2, env.EMAIL.send
 | adapters | `src/http/`, `src/mcp/` | parse and validate input, call core, format the result |
 | services | `src/core/` | the only place with business logic |
 | storage | `src/db/` | typed D1 helpers, one module per table |
-| mail | `src/email/` | inbound ingest, threading, MIME parsing, outbound builders |
+| mail | `src/email/` | inbound ingest, threading, MIME parsing, outbound builders, the transports |
 | schemas | `src/schemas/` | zod input and response shapes shared by MCP and the OpenAPI document |
 | helpers | `src/lib/` | ids, otp, hash, errors, pagination, address, limits, rfc, time |
 | setup | `scripts/` | the operator command that provisions a deployment |
@@ -36,10 +39,14 @@ Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate
 `INBOX_WAITER` (the `InboxWaiter` Durable Object namespace, optional), and the
 vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`,
 `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH`, `QUOTA_STORAGE_BYTES`,
-`SPAM_LABEL_THRESHOLD`, `SPAM_REJECT_THRESHOLD`, `ROUTING_MODE`, `CLOUDFLARE_ZONE_ID` and
-`WORKER_NAME` plus the `OPERATOR_TOKEN`, `ADMIN_SECRET`
-and `ROUTING_API_TOKEN` secrets. `src/env.ts` turns the vars into a `Config`; the three
-secrets are read from `Env` directly, since none has a parsed form.
+`SPAM_LABEL_THRESHOLD`, `SPAM_REJECT_THRESHOLD`, `ROUTING_MODE`, `MAIL_TRANSPORT`,
+`CLOUDFLARE_ZONE_ID` and
+`WORKER_NAME` plus the `OPERATOR_TOKEN`, `ADMIN_SECRET`, `INBOUND_SECRET`
+and `ROUTING_API_TOKEN` secrets, and the per-transport secrets `docs/api.md` lists.
+`src/env.ts` turns the vars into a `Config`; the
+secrets are read from `Env` directly, since none has a parsed form. `Env` also carries an optional
+`MAIL`, a `MailTransport` used ahead of `MAIL_TRANSPORT` when it is set, which is how the suites
+inject a fake and the one seam a binding-shaped transport would arrive through.
 
 ## Inbound
 
@@ -75,6 +82,26 @@ Rejections are thrown as `InboundRejected` and turned into `message.setReject(re
 
 Threading has no subject-based fallback: a reply from a client that drops both `In-Reply-To` and
 `References` starts a new thread.
+
+### Inbound adapters
+
+`ingestInbound` knows nothing about Email Routing, so `handleEmail` is one adapter over it and
+`POST /v1/inbound` is a second, for SES over SNS or S3, a Resend inbound webhook, or a self-hosted
+MTA. `src/core/inbound.ts` holds both halves of it: `requireInboundSecret`, a constant-time compare
+against `INBOUND_SECRET` that is disabled below 32 characters like the other two secrets, and
+`receiveInbound`, which turns an `InboundRejected` into `400 rejected` carrying the same `550` or
+`552` reason so the caller can bounce with it. The route reads a `message/rfc822` body plus the two
+envelope headers, or a JSON body whose `raw` is base64. It is not rate limited by `RATE`, because
+the caller is a mail provider rather than an agent, and the secret is what bounds it.
+
+`POST /v1/inbound/bounces` is the same secret over the suppression list. `src/email/notifications.ts`
+is a pure parser from the SES-over-SNS, Resend and generic shapes to `{provider, from,
+recipients}`, and `recordProviderBounce` writes one row per address with source `provider` and
+reason `provider` or `soft_bounce`. The sending address in the notification is what picks the
+account, so a provider that reports a bounce for an address this deployment never sent from is 404
+rather than a row on someone else's list. An SNS `SubscriptionConfirmation` is answered by fetching
+its `SubscribeURL` once. Signatures are not verified: that is the deliberate v1 limit recorded in
+`docs/status.md`, and the secret carries the whole of the authentication.
 
 ### Spam
 
@@ -323,14 +350,13 @@ steps:
    `QUOTA_MESSAGES_SENT_PER_MONTH` this UTC month, before anything is composed;
 3. build through `src/email/outbound.ts`, which normalizes and dedupes recipients, enforces
    `OUTBOUND_MAX_RECIPIENTS`, `OUTBOUND_MAX_ATTACHMENTS` and `OUTBOUND_MAX_BYTES`, and returns both
-   an `EmailMessageBuilder` and the derived fields the row needs;
+   a provider-neutral `OutboundMessage` and the derived fields the row needs;
 4. reject an unverified account sending anywhere but its own `accounts.email` with
    `403 message_rejected`;
 5. `assertRecipientsNotSuppressed`, which fails the whole send with 400 `recipient_suppressed`
    when any recipient is on the account's suppression list under `hard_bounce`, `manual` or
    `provider`;
-6. `send`, which maps the binding's `E_*` codes onto `AppError`s and normalizes the returned
-   `messageId`;
+6. `send`, which picks the transport and normalizes the returned `messageId`;
 7. persist one `direction: "outbound"` row labelled `["sent"]` with `raw_key` null, store each
    attachment at `att/{message_id}/{n}`, and call `touchThread`.
 
@@ -384,7 +410,44 @@ message in `error`; a failed draft is never retried on its own and is re-schedul
 draft left `sending` by a Worker killed mid-send is picked up by nothing, which is the deliberate
 trade: at most one send, and a stuck row an operator can see, rather than a duplicate email.
 
-`src/email/system.ts` holds `sendOtpEmail`, the only mail the service sends on its own behalf.
+`src/email/system.ts` holds `sendOtpEmail`, the only mail the service sends on its own behalf. It
+builds through `buildSend` and goes out through `send` like every other message, so a deployment on
+a non-Cloudflare transport mails its verification codes through that transport too.
+
+### Transports
+
+`MailTransport` in `src/email/transport.ts` is one method, `send(message: OutboundMessage):
+Promise<string | null>`, returning the bare RFC message id. `OutboundMessage` is the whole of what a
+provider needs — from, to, cc, bcc, reply-to, subject, text, html, headers, attachments as bytes,
+and the threading pair — and nothing of how it is sent. `selectTransport(env)` in
+`src/email/transports/index.ts` is the only place that reads `MAIL_TRANSPORT`, so adding a provider
+is a file plus one branch.
+
+- `cloudflare`, the default, renders the message into an `EmailMessageBuilder` and calls
+  `env.EMAIL.send`. It is the only transport that keeps the `E_*` mapping, because it is the only
+  one with `E_*` codes.
+- `smtp` opens a `cloudflare:sockets` connection, implicit TLS on 465 or `startTls()` after
+  `STARTTLS` on 587, authenticates with PLAIN or LOGIN depending on what the EHLO advertises, and
+  walks `MAIL FROM`, one `RCPT TO` per recipient, `DATA` dot-stuffed, `QUIT`. The reader is
+  line-oriented and folds a multi-line reply into one `{code, lines}`.
+- `ses` posts SES v2 `SendEmail` with raw content, signed with SigV4 in `src/lib/sigv4.ts` over
+  WebCrypto, so no AWS SDK is bundled.
+- `resend` posts its HTTP API with base64 attachments and the headers passed through.
+
+`smtp` and `ses` share `src/email/transports/mime.ts`, which is the serializer the send binding
+otherwise hides: folded RFC 5322 headers, RFC 2047 encoded words for non-ASCII, base64 bodies so
+nothing depends on line length or 8-bit cleanliness, `multipart/alternative` inside
+`multipart/mixed`, and a generated `<ulid@domain>` `Message-ID` when the caller set none. It
+returns that id, which is what makes threading work identically on every transport: the id on the
+wire is the id stored on the row. `resend` reaches the same place by setting the header itself,
+because the id its API returns is its own and not an RFC one.
+
+Every transport maps its provider's rejections onto the same four errors — `sender_not_verified`,
+`too_many_requests`, `recipient_suppressed` and `message_rejected` — which is what lets `src/core`
+and both adapters stay unaware of which one is configured; `docs/api.md` has the table. A transport
+whose secrets are missing raises 503 `sender_not_verified` naming the missing secret at the moment
+of the send rather than at startup, because a Worker has no startup to fail in and a half-configured
+deployment should still answer every read.
 
 ## Webhooks
 

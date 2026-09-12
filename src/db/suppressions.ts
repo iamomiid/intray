@@ -16,6 +16,7 @@ export interface SoftBounceInput {
   accountId: string;
   address: string;
   at: number;
+  source: string;
 }
 
 export interface SuppressionFilters {
@@ -68,10 +69,10 @@ export async function recordSoftBounce(db: D1Database, input: SoftBounceInput): 
     .prepare(
       `INSERT INTO suppressions
          (account_id, address, reason, source, detail, message_id, created_at, last_seen_at)
-       VALUES (?, ?, 'soft_bounce', 'dsn', NULL, NULL, ?, ?)
+       VALUES (?, ?, 'soft_bounce', ?, NULL, NULL, ?, ?)
        ON CONFLICT (account_id, address) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
     )
-    .bind(input.accountId, input.address, input.at, input.at)
+    .bind(input.accountId, input.address, input.source, input.at, input.at)
     .run();
 }
 

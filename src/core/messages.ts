@@ -623,7 +623,7 @@ export async function sendMessage(
   });
   assertRecipientsAllowed(principal, built);
   await assertRecipientsNotSuppressed(env, inbox.account_id, built.recipients);
-  const rfcMessageId = await send(env, built.builder);
+  const rfcMessageId = await send(env, built.message);
   return persistOutbound(env, inbox, built, rfcMessageId, null, sender);
 }
 
@@ -645,7 +645,7 @@ export async function replyToMessage(
   assertRecipientsAllowed(principal, built);
   await assertRecipientsNotSuppressed(env, inbox.account_id, built.recipients);
   const thread = await getThreadRow(env.DB, inbox.inbox_id, parent.thread_id);
-  const rfcMessageId = await send(env, built.builder);
+  const rfcMessageId = await send(env, built.message);
   return persistOutbound(env, inbox, built, rfcMessageId, thread, sender);
 }
 
@@ -667,6 +667,6 @@ export async function forwardMessage(
   });
   assertRecipientsAllowed(principal, built);
   await assertRecipientsNotSuppressed(env, inbox.account_id, built.recipients);
-  const rfcMessageId = await send(env, built.builder);
+  const rfcMessageId = await send(env, built.message);
   return persistOutbound(env, inbox, built, rfcMessageId, null, sender);
 }
