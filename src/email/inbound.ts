@@ -1,5 +1,6 @@
 import { type ExtractableAttachment, storeAttachmentText } from "../core/attachments";
 import { parseStringArray } from "../core/serialize";
+import { recordBounce } from "../core/suppressions";
 import { recordReceived, withinInboundQuota } from "../core/usage";
 import { emitEvent } from "../core/webhooks";
 import { insertAttachment } from "../db/attachments";
@@ -12,6 +13,7 @@ import { newId } from "../lib/ids";
 import { INBOUND_MAX_BYTES } from "../lib/limits";
 import { now } from "../lib/time";
 import { notifyInbox } from "../waiter";
+import { type BounceRecipient, detectBounce } from "./bounce";
 import { type ParsedEmail, type ParsedMailbox, parseMime } from "./parse";
 import { resolveThreadId } from "./threading";
 
@@ -45,12 +47,24 @@ export interface InboundResult {
 
 const INBOUND_LABELS: readonly string[] = ["received", "unread"];
 
-function inboundLabels(tag: string | null): string {
+export const BOUNCE_LABEL = "bounce";
+
+function inboundLabels(tag: string | null, bounced: boolean): string {
+  const base = bounced ? [...INBOUND_LABELS, BOUNCE_LABEL] : [...INBOUND_LABELS];
   const label = tagLabel(tag);
-  if (label === null || INBOUND_LABELS.includes(label)) {
-    return JSON.stringify(INBOUND_LABELS);
+  if (label === null || base.includes(label)) {
+    return JSON.stringify(base);
   }
-  return JSON.stringify([...INBOUND_LABELS, label]);
+  return JSON.stringify([...base, label]);
+}
+
+function detectedBounce(parsed: ParsedEmail): BounceRecipient[] {
+  try {
+    return detectBounce(parsed);
+  } catch (error) {
+    console.error("bounce detection failed", error);
+    return [];
+  }
 }
 
 function participantsOf(parsed: ParsedEmail, existing: string[]): string {
@@ -91,6 +105,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   }
 
   const parsed = await parseMime(input.raw);
+  const bounced = detectedBounce(parsed);
   const messageId = newId("msg");
   const rawKey = `raw/${messageId}.eml`;
   const createdAt = now();
@@ -146,7 +161,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     text: parsed.text,
     html: parsed.html,
     preview: parsed.preview,
-    labelsJson: inboundLabels(tag),
+    labelsJson: inboundLabels(tag, bounced.length > 0),
     size: input.raw.byteLength,
     hasAttachments: stored.length > 0 ? 1 : 0,
     rawKey,
@@ -179,6 +194,10 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     subject: parsed.subject,
   });
 
+  if (bounced.length > 0) {
+    await recordBounce(env, inbox.account_id, messageId, bounced);
+    await emitEvent(env, inbox.account_id, "message.bounced", inbox.inbox_id, messageId);
+  }
   await emitEvent(env, inbox.account_id, "message.received", inbox.inbox_id, messageId);
   await notifyInbox(env, inbox.inbox_id, createdAt);
   await recordReceived(

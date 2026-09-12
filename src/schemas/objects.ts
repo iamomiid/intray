@@ -7,6 +7,8 @@ import {
   draftStatus,
   messageDirection,
   orgRole,
+  suppressionReason,
+  suppressionSource,
 } from "./common";
 
 export const addressObject = z.strictObject({
@@ -198,6 +200,19 @@ export const webhookObject = z.strictObject({
   created_at: z.number(),
 });
 
+export const suppressionObject = z.strictObject({
+  address: z.string(),
+  reason: suppressionReason.describe("why the address is suppressed"),
+  source: suppressionSource.describe("what put it on the list"),
+  detail: z.string().nullable().describe("the bounce diagnostic, or the note a manual entry gave"),
+  message_id: z
+    .string()
+    .nullable()
+    .describe("the stored bounce message the entry came from, when it came from one"),
+  created_at: z.number(),
+  last_seen_at: z.number().describe("when the address last bounced or was last re-suppressed"),
+});
+
 export const createdWebhookObject = webhookObject.extend({
   secret: z.string().describe("the signing secret, returned only by the call that creates it"),
 });
@@ -231,6 +246,8 @@ export const messagePage = pageOf(messageObject);
 export const draftPage = pageOf(draftObject);
 
 export const webhookPage = pageOf(webhookObject);
+
+export const suppressionPage = pageOf(suppressionObject);
 
 export const messageList = z.strictObject({ items: z.array(messageObject) });
 
@@ -308,7 +325,7 @@ export const ERROR_CODES = [
   "bad_request",
   "invalid_address",
   "invalid_code",
-  "e_recipient_suppressed",
+  "recipient_suppressed",
   "e_too_many_recipients",
   "e_content_too_large",
   "e_header_not_allowed",

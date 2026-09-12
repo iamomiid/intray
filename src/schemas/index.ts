@@ -8,6 +8,7 @@ export * from "./messages";
 export * from "./oauth";
 export * from "./objects";
 export * from "./orgs";
+export * from "./suppressions";
 export * from "./threads";
 export * from "./usage";
 export * from "./webhooks";

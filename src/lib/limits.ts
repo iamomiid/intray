@@ -25,3 +25,5 @@ export const WEBHOOK_MAX_PER_ACCOUNT = 10;
 export const WEBHOOK_SECRET_BYTES = 32;
 
 export const WEBHOOK_TIMEOUT_MS = 10_000;
+
+export const SUPPRESSION_DETAIL_MAX_CHARS = 512;

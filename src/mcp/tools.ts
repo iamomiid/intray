@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import skillMd from "../../public/skill.md";
 import {
+  addSuppression,
   authenticate,
   batchDeleteMessages,
   batchUpdateLabels,
@@ -31,11 +32,13 @@ import {
   listMembers,
   listMessages,
   listOrgs,
+  listSuppressions,
   listThreads,
   listWebhooks,
   me,
   provisionInbox,
   removeMember,
+  removeSuppression,
   replyToMessage,
   revokeInvite,
   searchMessages,
@@ -62,6 +65,7 @@ import {
   createInboxInput,
   createInviteInput,
   createOrgInput,
+  createSuppressionInput,
   createWebhookInput,
   draftInput,
   emptyInput,
@@ -73,6 +77,7 @@ import {
   listInboxesInput,
   listMessagesInput,
   listOrgsInput,
+  listSuppressionsInput,
   listThreadsInput,
   memberInput,
   messageInput,
@@ -82,6 +87,7 @@ import {
   searchMessagesInput,
   sendMessageInput,
   signupInput,
+  suppressionInput,
   threadInput,
   updateDraftInput,
   updateMemberInput,
@@ -565,6 +571,47 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
   );
 }
 
+function registerSuppressionTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "list_suppressions",
+    {
+      title: "List suppressions",
+      description:
+        "List the addresses this account may not send to, newest first. An entry lands here when" +
+        " a bounce message arrives for it or when add_suppression puts it there. reason filters" +
+        " the list: hard_bounce and manual and provider block a send, soft_bounce is a record" +
+        " of a temporary failure and blocks nothing.",
+      inputSchema: listSuppressionsInput,
+    },
+    (args) => run(() => listSuppressions(env, principal, args)),
+  );
+
+  server.registerTool(
+    "add_suppression",
+    {
+      title: "Add suppression",
+      description:
+        "Suppress an address by hand, with reason manual. Every later send, reply, forward or" +
+        " draft send naming it fails with recipient_suppressed before any mail is attempted." +
+        " detail is a free-text note stored with the entry.",
+      inputSchema: createSuppressionInput,
+    },
+    (args) => run(() => addSuppression(env, principal, args)),
+  );
+
+  server.registerTool(
+    "remove_suppression",
+    {
+      title: "Remove suppression",
+      description:
+        "Release an address so this account can send to it again. Use it once the bounce is" +
+        " understood and fixed; a later bounce puts the address straight back on the list.",
+      inputSchema: suppressionInput,
+    },
+    (args) => run(() => removeSuppression(env, principal, args.address)),
+  );
+}
+
 function registerOrgTools(server: McpServer, env: Env, principal: Principal): void {
   server.registerTool(
     "create_org",
@@ -702,5 +749,6 @@ export function registerTools(server: McpServer, env: Env, principal: Principal 
   registerSendingTools(server, env, principal);
   registerDraftTools(server, env, principal);
   registerWebhookTools(server, env, principal);
+  registerSuppressionTools(server, env, principal);
   registerOrgTools(server, env, principal);
 }

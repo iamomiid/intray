@@ -9,6 +9,7 @@ export * from "./oauth";
 export * from "./operator";
 export * from "./orgs";
 export * from "./principal";
+export * from "./suppressions";
 export * from "./threads";
 export * from "./usage";
 export * from "./webhooks";

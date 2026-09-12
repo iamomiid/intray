@@ -185,7 +185,7 @@ it("creates a webhook subscribed to both events and returns the secret once", as
 
   expect(created.webhook_id.startsWith("whk_")).toBe(true);
   expect(created.url).toBe(HOOK_URL);
-  expect(created.events).toEqual(["message.received", "message.sent"]);
+  expect(created.events).toEqual(["message.received", "message.sent", "message.bounced"]);
   expect(created.description).toBe("ops");
   expect(created.active).toBe(true);
   expect(created.secret.length).toBeGreaterThan(0);
@@ -245,7 +245,7 @@ it("updates a webhook field by field and deactivates it", async () => {
   });
   expect(renamed.description).toBe("alerts");
   expect(renamed.url).toBe(HOOK_URL);
-  expect(renamed.events).toEqual(["message.received", "message.sent"]);
+  expect(renamed.events).toEqual(["message.received", "message.sent", "message.bounced"]);
 
   const narrowed = await updateWebhook(env, principal, created.webhook_id, {
     url: `${ORIGIN}/next`,

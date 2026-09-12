@@ -11,6 +11,7 @@ export * from "./oauth";
 export * from "./orgs";
 export * from "./otps";
 export * from "./rows";
+export * from "./suppressions";
 export * from "./threads";
 export * from "./usage";
 export * from "./webhooks";

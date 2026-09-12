@@ -21,7 +21,7 @@ import { now } from "../lib/time";
 import { type Principal, requireFullScope } from "./principal";
 import { type MessageObject, toMessage, toWebhook, type WebhookObject } from "./serialize";
 
-export const WEBHOOK_EVENTS = ["message.received", "message.sent"] as const;
+export const WEBHOOK_EVENTS = ["message.received", "message.sent", "message.bounced"] as const;
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

@@ -57,6 +57,7 @@ import { applyLabelDelta, normalizeLabelDelta, normalizeLabels } from "./labels"
 import { deleteObjects } from "./objects";
 import { isVerified, type Principal } from "./principal";
 import { type MessageObject, parseStringArray, toMessage } from "./serialize";
+import { assertRecipientsNotSuppressed } from "./suppressions";
 import { groupAttachments } from "./threads";
 import { assertSendQuota, recordSent, recordStorageDelta } from "./usage";
 import { emitEvent } from "./webhooks";
@@ -617,6 +618,7 @@ export async function sendMessage(
     attachments: body.attachments,
   });
   assertRecipientsAllowed(principal, built);
+  await assertRecipientsNotSuppressed(env, inbox.account_id, built.recipients);
   const rfcMessageId = await send(env, built.builder);
   return persistOutbound(env, inbox, built, rfcMessageId, null, sender);
 }
@@ -637,6 +639,7 @@ export async function replyToMessage(
     email: sender.email,
   });
   assertRecipientsAllowed(principal, built);
+  await assertRecipientsNotSuppressed(env, inbox.account_id, built.recipients);
   const thread = await getThreadRow(env.DB, inbox.inbox_id, parent.thread_id);
   const rfcMessageId = await send(env, built.builder);
   return persistOutbound(env, inbox, built, rfcMessageId, thread, sender);
@@ -659,6 +662,7 @@ export async function forwardMessage(
     email: sender.email,
   });
   assertRecipientsAllowed(principal, built);
+  await assertRecipientsNotSuppressed(env, inbox.account_id, built.recipients);
   const rfcMessageId = await send(env, built.builder);
   return persistOutbound(env, inbox, built, rfcMessageId, null, sender);
 }

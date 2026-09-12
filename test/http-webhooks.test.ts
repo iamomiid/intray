@@ -88,7 +88,7 @@ it("creates, lists, reads, updates and deletes a webhook over REST", async () =>
   expect(created.status).toBe(201);
   const webhook = await created.json<WebhookResponse>();
   expect(webhook.webhook_id.startsWith("whk_")).toBe(true);
-  expect(webhook.events).toEqual(["message.received", "message.sent"]);
+  expect(webhook.events).toEqual(["message.received", "message.sent", "message.bounced"]);
   expect(webhook.secret).toBeDefined();
 
   const listed = await (await call("/v1/webhooks", "GET")).json<WebhookPage>();
