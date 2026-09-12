@@ -23,13 +23,25 @@ accounts/inboxes/threads/messages, R2 for raw MIME and attachments. Hono for HTT
   prose, no badges. No account ids, domains, addresses, or Worker URLs; use `example.com`,
   `agents.example.com`, `you@example.com`, `https://intray.example.workers.dev`.
 - Do not name any commercial product as inspiration, anywhere in the repo.
+- The repo is public. Nothing that identifies a deployment or a person goes into a commit, a
+  commit message, a PR description, an issue, or a test fixture: no real mail domain, address,
+  Worker URL, account, zone or database id, token, or secret, whether it is this deployment's or a
+  maintainer's own. CI rejects non-placeholder addresses, `workers.dev` URLs and 32-hex or UUID
+  identifiers, and runs a secret scanner.
+- A PR description is bullets and tables only, no paragraph over two sentences, with these
+  sections in order, "None" rather than omitted: What, Surface (a table of every new or changed
+  endpoint, tool, field, var and migration), Changes (grouped by area), Decisions (each with its
+  reason), Tests (one bullet per behavior, then counts before and after), Verified outside the
+  suite, Not in this PR, Needs from the maintainer (each bullet starts with the action).
 - `scripts/` is a product surface, not scaffolding. Keep it DRY, share helpers under `scripts/lib`,
   and write no one-off code there.
-- Run `pnpm check` (lint, typecheck, test) before finishing.
+- Run `pnpm check` (lint, typecheck, test) before finishing. CI runs the same on every pull
+  request and on `main`; a red check blocks the merge.
 
 ## Layout
 
 ```
+.github/                CI workflow and the identifier check it runs
 wrangler.jsonc          bindings, vars, compatibility date
 migrations/             D1 migrations, applied with pnpm db:migrate:local
 scripts/setup.ts        the setup command; steps and helpers in scripts/lib
