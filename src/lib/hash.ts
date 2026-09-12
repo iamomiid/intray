@@ -18,6 +18,11 @@ export async function sha256Hex(input: string): Promise<string> {
   return toHex(new Uint8Array(digest));
 }
 
+export async function sha256Base64Url(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
 export async function hmacSha256Hex(secret: string, payload: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(

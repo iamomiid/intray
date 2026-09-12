@@ -11,7 +11,9 @@ export type IdPrefix =
   | "dlv"
   | "org"
   | "inv"
-  | "aud";
+  | "aud"
+  | "oac"
+  | "oas";
 
 const nextUlid = monotonicFactory();
 

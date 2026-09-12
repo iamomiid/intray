@@ -15,8 +15,11 @@ Every `/v1` endpoint except `POST /v1/agent/signup` requires an API key, sent as
 `Authorization: Bearer it_...` or `X-API-Key: it_...`. Keys are `it_` followed by 32 random bytes
 base64url-encoded; only the SHA-256 hash is stored.
 
-MCP requests carry the same header. A request without a valid key gets the unauthenticated tool set,
-and a pending key counts as no key there.
+MCP requests carry the same header. A request with no `Authorization` header gets the
+unauthenticated tool set, and a pending key counts as no key there. An `Authorization` header that
+resolves to nothing answers 401 and points at the OAuth metadata; see "OAuth for MCP clients".
+
+A client that cannot set a header at all gets a key through the OAuth flow instead.
 
 A pending key is accepted by `POST /v1/agent/verify` alone; every other endpoint answers 401 until
 the code activates it.
@@ -633,14 +636,82 @@ quotas, and its own usage is still counted.
 `/openapi.json` needs no key, is `application/json` under `cache-control: public, max-age=300`, and
 is built once per isolate. `servers` carries `PUBLIC_URL`, `components.securitySchemes` covers both
 the bearer key and the `X-API-Key` header, and every operation names the error codes above with the
-error envelope as its body. It describes the four service endpoints as well as every `/v1` one; a
-test walks the Hono router and fails when a route is added without its entry.
+error envelope as its body. It describes the four service endpoints and the six OAuth ones as well
+as every `/v1` one; a test walks the Hono router and fails when a route is added without its entry.
+
+## OAuth for MCP clients
+
+An MCP client that cannot be handed a static header runs an authorization-code flow with PKCE and
+ends up holding an ordinary API key. Public clients only: no client secret is issued and the token
+endpoint takes no client authentication.
+
+| Method | Path | Body / query | Returns |
+| --- | --- | --- | --- |
+| GET | `/.well-known/oauth-authorization-server` | — | RFC 8414 metadata |
+| GET | `/.well-known/oauth-protected-resource` | — | RFC 9728 metadata naming `PUBLIC_URL/mcp` |
+| POST | `/oauth/register` | `{client_name, redirect_uris}` | `{client_id, client_name, redirect_uris, token_endpoint_auth_method, grant_types, response_types, client_id_issued_at}` |
+| GET | `/oauth/authorize` | `response_type`, `client_id`, `redirect_uri`, `code_challenge`, `code_challenge_method`, `state?`, `scope?` | the email page as `text/html` |
+| POST | `/oauth/authorize` | form `session_id`, `step`, and `email` or `code` | the code page as `text/html`, or 302 back to the client |
+| POST | `/oauth/token` | form `grant_type`, `code`, `redirect_uri`, `client_id`, `code_verifier` | `{access_token, token_type}` |
+
+All six need no key. Everything the metadata advertises is derived from `PUBLIC_URL`, and the
+metadata is what a client reads first: `response_types_supported` is `["code"]`,
+`grant_types_supported` is `["authorization_code"]`, `code_challenge_methods_supported` is
+`["S256"]`, and `token_endpoint_auth_methods_supported` is `["none"]`.
+
+The flow:
+
+1. The client registers itself with `POST /oauth/register`. Every `redirect_uri` must be `https`,
+   or `http` on `localhost` or `127.0.0.1` with any port, and carry no fragment; at most 10 of
+   them. Registration is rate-limited per IP exactly as signup is.
+2. The client opens `GET /oauth/authorize` in a browser. It renders a plain HTML page, no
+   JavaScript and no external assets, naming the client and asking for the email address of the
+   account. An unknown `client_id` or a `redirect_uri` the client did not register renders an error
+   page and never redirects, because redirecting to an unverified URI is how an open redirector is
+   built. Any other invalid parameter redirects to the client with `error` and `error_description`
+   per RFC 6749.
+3. `POST /oauth/authorize` with `step=email`. An address that has an account gets a 6-digit code
+   through the same OTP machinery signup uses, under the same per-account hourly cap, and the page
+   then asks for the code. An address with no account is told to sign up first, or, once an org
+   exists, that an invite is needed. Nothing here says whether an address has an account to anyone
+   who cannot read the mailbox, because both answers render the same form.
+4. `POST /oauth/authorize` with `step=code`. A correct code marks the account verified if it was
+   not, since it proves control of the address exactly as `POST /v1/agent/verify` does, and
+   redirects to `redirect_uri?code=...&state=...`. A wrong or expired code counts an attempt
+   against `OTP_MAX_ATTEMPTS` and re-renders the form with the reason.
+5. `POST /oauth/token` exchanges the code. The S256 challenge, the single use, the 60-second
+   expiry, and the binding to the client and the redirect URI are all checked before a key is
+   minted.
+
+The in-progress authorization is an `oauth_sessions` row carrying the client, the redirect URI, the
+state, the challenge and, once the email step passes, the account. It lives 10 minutes; the
+authorization code lives 60 seconds and is single use. Both are pruned opportunistically, so an
+abandoned authorization leaves nothing behind.
+
+**The access token is an API key.** `access_token` is an ordinary `it_` key on the authorizing
+account, named `oauth:<client_name>` and scoped `*`. It appears in `GET /v1/api-keys`, `DELETE
+/v1/api-keys/:key_id` revokes it, and it authenticates `/v1` and `/mcp` like any other key. There
+is no refresh token and the token does not expire; revoking the key is how a connection is ended.
+
+`/mcp` answers 401 with `WWW-Authenticate: Bearer resource_metadata="<PUBLIC_URL>/.well-known/oauth-protected-resource"`
+for an `Authorization` header that does not resolve to a live key, which is how a client discovers
+this flow and how a revoked token sends it back through it. A pending key is the exception and
+still gets the onboarding tool set, because `verify` is what a pending key exists to call. A
+request with no `Authorization` header at all is unchanged: it gets the unauthenticated onboarding
+tools.
+
+Errors on these endpoints are OAuth-shaped, not the envelope above: `{"error": "...",
+"error_description": "..."}`. `POST /oauth/register` answers 400 `invalid_client_metadata` or
+`invalid_redirect_uri` and 429 `too_many_requests`. `POST /oauth/token` answers 400
+`invalid_request`, `invalid_grant` or `unsupported_grant_type`. The two authorize routes answer in
+HTML: 200 with the form, 302 to the client, or 400 with an error page.
 
 ## MCP
 
 Streamable HTTP at `/mcp`. A fresh `McpServer` is built per request. The key is read from the
 request headers before the handler runs, and which tool set is registered depends on whether it
-resolved to a live account.
+resolved to a live account. A key presented and refused answers 401 rather than downgrading to the
+onboarding tools; see "OAuth for MCP clients".
 
 Tool arguments use the same names and semantics as the REST bodies and queries above.
 

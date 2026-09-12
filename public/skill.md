@@ -94,6 +94,13 @@ Without a valid key the endpoint serves only `signup`, `verify`, and `read_onboa
 one, or with the operator token, it serves the full tool set. `inbox_id` is always the full email
 address.
 
+If your client supports OAuth and cannot be given a static header, point it at `<PUBLIC_URL>/mcp`
+and let it discover the rest: it will find the authorization server, register itself, and open a
+page that asks your human for their account's email address and then for a 6-digit code sent to it.
+What comes back is an ordinary API key, so it shows up in `GET /v1/api-keys` and `DELETE
+/v1/api-keys/:key_id` disconnects the client. You need an account already: the page authorizes an
+existing address, it does not sign one up.
+
 ## Common tasks
 
 Create an inbox:

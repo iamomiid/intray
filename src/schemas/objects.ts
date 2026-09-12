@@ -265,6 +265,45 @@ export const meResult = z.strictObject({
   key_id: z.string(),
 });
 
+export const oauthAuthorizationServerObject = z.strictObject({
+  issuer: z.string(),
+  authorization_endpoint: z.string(),
+  token_endpoint: z.string(),
+  registration_endpoint: z.string(),
+  response_types_supported: z.array(z.string()),
+  grant_types_supported: z.array(z.string()),
+  code_challenge_methods_supported: z.array(z.string()),
+  token_endpoint_auth_methods_supported: z.array(z.string()),
+});
+
+export const oauthProtectedResourceObject = z.strictObject({
+  resource: z.string(),
+  authorization_servers: z.array(z.string()),
+  bearer_methods_supported: z.array(z.string()),
+  resource_name: z.string(),
+  resource_documentation: z.string(),
+});
+
+export const oauthClientObject = z.strictObject({
+  client_id: z.string(),
+  client_name: z.string(),
+  redirect_uris: z.array(z.string()),
+  token_endpoint_auth_method: z.literal("none"),
+  grant_types: z.array(z.string()),
+  response_types: z.array(z.string()),
+  client_id_issued_at: z.number().describe("Unix seconds, as RFC 7591 defines it"),
+});
+
+export const oauthTokenObject = z.strictObject({
+  access_token: z.string().describe("an ordinary it_ API key on the authorizing account"),
+  token_type: z.literal("bearer"),
+});
+
+export const oauthErrorObject = z.strictObject({
+  error: z.string(),
+  error_description: z.string(),
+});
+
 export const ERROR_CODES = [
   "bad_request",
   "invalid_address",

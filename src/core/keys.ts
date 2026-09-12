@@ -137,6 +137,17 @@ async function ownedScopes(env: Env, accountId: string, scopes: string[]): Promi
   return scopes;
 }
 
+async function issueApiKey(
+  env: Env,
+  accountId: string,
+  name: string | null,
+  scopes: string[],
+): Promise<CreatedApiKey> {
+  const created = await mintApiKey(env, accountId, name, false, scopes);
+  await recordAccountAudit(env, accountId, "key.created", created.key_id);
+  return created;
+}
+
 export async function createApiKey(
   env: Env,
   principal: Principal,
@@ -144,15 +155,15 @@ export async function createApiKey(
 ): Promise<CreatedApiKey> {
   requireFullScope(principal);
   const scopes = await ownedScopes(env, principal.account.id, normalizeScopes(input.scopes));
-  const created = await mintApiKey(
-    env,
-    principal.account.id,
-    optionalName(input.name),
-    false,
-    scopes,
-  );
-  await recordAccountAudit(env, principal.account.id, "key.created", created.key_id);
-  return created;
+  return issueApiKey(env, principal.account.id, optionalName(input.name), scopes);
+}
+
+export function createAccountApiKey(
+  env: Env,
+  accountId: string,
+  name: string,
+): Promise<CreatedApiKey> {
+  return issueApiKey(env, accountId, optionalName(name), [WILDCARD_SCOPE]);
 }
 
 export function createPendingApiKey(env: Env, accountId: string): Promise<CreatedApiKey> {

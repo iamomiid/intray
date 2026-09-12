@@ -8,6 +8,8 @@ import {
   attachmentParams,
   auditObject,
   auditPage,
+  authorizeFormBody,
+  authorizeQuery,
   batchDeleteBody,
   batchLabelsBody,
   createApiKeyBody,
@@ -48,11 +50,17 @@ import {
   messageObject,
   messagePage,
   messageParams,
+  oauthAuthorizationServerObject,
+  oauthClientObject,
+  oauthErrorObject,
+  oauthProtectedResourceObject,
+  oauthTokenObject,
   orgDetailObject,
   orgMembershipPage,
   orgObject,
   orgParams,
   provisionInboxBody,
+  registerClientBody,
   removedObject,
   replyBody,
   revokedObject,
@@ -64,6 +72,7 @@ import {
   threadObject,
   threadPage,
   threadParams,
+  tokenFormBody,
   updateDraftBody,
   updateMemberBody,
   updateMessageLabelsBody,
@@ -85,6 +94,12 @@ type ResultContent =
   | { kind: "json"; schema: z.ZodType }
   | { kind: "media"; media: string; schema: Json };
 
+interface ExtraResponse {
+  status: number;
+  description: string;
+  content?: ResultContent;
+}
+
 interface RouteSpec {
   method: "get" | "post" | "patch" | "delete";
   path: string;
@@ -97,10 +112,12 @@ interface RouteSpec {
   query?: z.ZodObject;
   headers?: z.ZodObject;
   body?: z.ZodObject;
+  bodyMedia?: string;
   bodyRequired?: boolean;
   status: number;
   result: ResultContent;
   errors: number[];
+  extra?: readonly ExtraResponse[];
 }
 
 const COMPONENTS = {
@@ -163,6 +180,14 @@ const COMPONENTS = {
   update_draft_body: updateDraftBody,
   create_webhook_body: createWebhookBody,
   update_webhook_body: updateWebhookBody,
+  oauth_authorization_server_metadata: oauthAuthorizationServerObject,
+  oauth_protected_resource_metadata: oauthProtectedResourceObject,
+  oauth_client: oauthClientObject,
+  oauth_token: oauthTokenObject,
+  oauth_error: oauthErrorObject,
+  register_client_body: registerClientBody,
+  authorize_form_body: authorizeFormBody,
+  token_form_body: tokenFormBody,
 } as const satisfies Record<string, z.ZodType>;
 
 const COMPONENT_NAMES = new Map<z.ZodType, string>(
@@ -208,6 +233,13 @@ const PARAMETER_DESCRIPTIONS: Record<string, string> = {
   before: "upper bound on created_at, Unix milliseconds",
   timeout: "seconds to block, default 30, capped at 55",
   status: "filter drafts by status",
+  response_type: "must be code",
+  client_id: "the client_id POST /oauth/register returned",
+  redirect_uri: "must match one of the client's registered redirect URIs exactly",
+  code_challenge: "the base64url SHA-256 of the client's code verifier",
+  code_challenge_method: "must be S256",
+  state: "returned unchanged on the redirect back to the client",
+  scope: "recorded on the authorization and otherwise unused; tokens are always full-scope",
 };
 
 const binaryContent = (media: string): ResultContent => ({
@@ -923,6 +955,120 @@ const ROUTES: readonly RouteSpec[] = [
   },
   {
     method: "get",
+    path: "/.well-known/oauth-authorization-server",
+    operationId: "oauthAuthorizationServerMetadata",
+    tag: "OAuth",
+    summary: "RFC 8414 authorization server metadata",
+    description:
+      "Built from PUBLIC_URL. Public clients only: the token endpoint takes no client authentication and S256 is the only code challenge method.",
+    auth: false,
+    status: 200,
+    result: jsonContent(oauthAuthorizationServerObject),
+    errors: [],
+  },
+  {
+    method: "get",
+    path: "/.well-known/oauth-protected-resource",
+    operationId: "oauthProtectedResourceMetadata",
+    tag: "OAuth",
+    summary: "RFC 9728 protected resource metadata for the MCP endpoint",
+    description:
+      "The resource is PUBLIC_URL/mcp and the authorization server is this deployment. A 401 from /mcp names this document in its WWW-Authenticate header.",
+    auth: false,
+    status: 200,
+    result: jsonContent(oauthProtectedResourceObject),
+    errors: [],
+  },
+  {
+    method: "post",
+    path: "/oauth/register",
+    operationId: "registerOauthClient",
+    tag: "OAuth",
+    summary: "RFC 7591 dynamic client registration",
+    description:
+      "Public clients only, so no client_secret is issued. Every redirect_uri must be https, or http on localhost or 127.0.0.1 with any port, and carry no fragment. Rate-limited per IP like signup.",
+    auth: false,
+    body: registerClientBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(oauthClientObject),
+    errors: [],
+    extra: [
+      {
+        status: 400,
+        description: "invalid_client_metadata, invalid_redirect_uri",
+        content: jsonContent(oauthErrorObject),
+      },
+      { status: 429, description: "too_many_requests", content: jsonContent(oauthErrorObject) },
+    ],
+  },
+  {
+    method: "get",
+    path: "/oauth/authorize",
+    operationId: "authorizeOauth",
+    tag: "OAuth",
+    summary: "Render the page that asks the account holder for their email",
+    description:
+      "The only human-facing page the service serves: plain HTML, no JavaScript and no external assets. An unknown client_id or an unregistered redirect_uri renders an error page and never redirects; any other invalid parameter redirects to the client with error and error_description per RFC 6749.",
+    auth: false,
+    query: authorizeQuery,
+    status: 200,
+    result: textContent("text/html"),
+    errors: [],
+    extra: [
+      { status: 302, description: "redirect to the client carrying error and state" },
+      { status: 400, description: "the error page", content: textContent("text/html") },
+    ],
+  },
+  {
+    method: "post",
+    path: "/oauth/authorize",
+    operationId: "submitOauthAuthorization",
+    tag: "OAuth",
+    summary: "Take the email, then the emailed code, and redirect back with an authorization code",
+    description:
+      "Form-encoded. step email sends a 6-digit code to an address that has an account, under the same per-account hourly cap as signup, and renders the code form; step code checks it, marks the account verified if it was not, and redirects to the client with code and state.",
+    auth: false,
+    body: authorizeFormBody,
+    bodyMedia: "application/x-www-form-urlencoded",
+    bodyRequired: true,
+    status: 200,
+    result: textContent("text/html"),
+    errors: [],
+    extra: [
+      { status: 302, description: "redirect to the client carrying code and state" },
+      {
+        status: 400,
+        description: "the error page for an expired session",
+        content: textContent("text/html"),
+      },
+    ],
+  },
+  {
+    method: "post",
+    path: "/oauth/token",
+    operationId: "oauthToken",
+    tag: "OAuth",
+    summary: "Exchange an authorization code for an API key",
+    description:
+      "Form-encoded, no client authentication, single-use codes that live 60 seconds. The access_token is an ordinary it_ API key: it appears in GET /v1/api-keys and DELETE /v1/api-keys/{key_id} revokes it. No refresh token is issued and the token does not expire.",
+    auth: false,
+    body: tokenFormBody,
+    bodyMedia: "application/x-www-form-urlencoded",
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(oauthTokenObject),
+    errors: [],
+    extra: [
+      {
+        status: 400,
+        description: "invalid_request, invalid_grant, unsupported_grant_type",
+        content: jsonContent(oauthErrorObject),
+      },
+    ],
+  },
+  {
+    method: "get",
     path: "/healthz",
     operationId: "health",
     tag: "Service",
@@ -1015,17 +1161,33 @@ function requestBody(route: RouteSpec): Json {
   return {
     requestBody: {
       required: route.bodyRequired === true,
-      content: { "application/json": { schema: schemaRef(route.body) } },
+      content: { [route.bodyMedia ?? "application/json"]: { schema: schemaRef(route.body) } },
     },
   };
 }
 
+function responseContent(content: ResultContent): Json {
+  return content.kind === "json"
+    ? { "application/json": { schema: schemaRef(content.schema) } }
+    : { [content.media]: { schema: content.schema } };
+}
+
+function extraResponses(extra: readonly ExtraResponse[] | undefined): Json {
+  return Object.fromEntries(
+    (extra ?? []).map((response) => [
+      String(response.status),
+      {
+        description: response.description,
+        ...(response.content === undefined ? {} : { content: responseContent(response.content) }),
+      },
+    ]),
+  );
+}
+
 function successResponse(route: RouteSpec): Json {
-  const content =
-    route.result.kind === "json"
-      ? { "application/json": { schema: schemaRef(route.result.schema) } }
-      : { [route.result.media]: { schema: route.result.schema } };
-  return { [String(route.status)]: { description: "success", content } };
+  return {
+    [String(route.status)]: { description: "success", content: responseContent(route.result) },
+  };
 }
 
 function errorResponses(statuses: number[]): Json {
@@ -1058,7 +1220,11 @@ function operation(route: RouteSpec): Json {
       ...parameters("header", route.headers),
     ],
     ...requestBody(route),
-    responses: { ...successResponse(route), ...errorResponses(routeErrorStatuses(route)) },
+    responses: {
+      ...successResponse(route),
+      ...errorResponses(routeErrorStatuses(route)),
+      ...extraResponses(route.extra),
+    },
   };
 }
 
@@ -1093,6 +1259,7 @@ const TAGS = [
   { name: "Drafts", description: "messages composed now and sent later" },
   { name: "Webhooks", description: "per-account https endpoints for message events" },
   { name: "Usage", description: "counters and quotas for the calling account" },
+  { name: "OAuth", description: "the authorization-code flow MCP clients use to get a key" },
   { name: "Service", description: "unauthenticated endpoints about the deployment itself" },
 ];
 

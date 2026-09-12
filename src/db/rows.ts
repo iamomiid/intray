@@ -165,6 +165,37 @@ export interface AuditRow {
   created_at: number;
 }
 
+export interface OauthClientRow {
+  client_id: string;
+  name: string;
+  redirect_uris_json: string;
+  created_at: number;
+}
+
+export interface OauthSessionRow {
+  session_id: string;
+  client_id: string;
+  redirect_uri: string;
+  state: string | null;
+  code_challenge: string;
+  scope: string | null;
+  account_id: string | null;
+  expires_at: number;
+  created_at: number;
+}
+
+export interface OauthCodeRow {
+  code_hash: string;
+  session_id: string;
+  client_id: string;
+  account_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  expires_at: number;
+  used_at: number | null;
+  created_at: number;
+}
+
 export interface DeletedObjectKeys {
   rawKeys: string[];
   attachmentKeys: string[];

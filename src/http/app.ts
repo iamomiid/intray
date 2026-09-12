@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import skillMd from "../../public/skill.md";
 import { AppError } from "../lib/errors";
 import { routes } from "./routes/index";
+import { oauthRoutes, wellKnownRoutes } from "./routes/oauth";
 import { openapiRoutes } from "./routes/openapi";
 import type { AppEnv } from "./types";
 
@@ -18,6 +19,10 @@ app.get("/skill.md", () => markdown(skillMd));
 app.get("/llms.txt", () => markdown(skillMd));
 
 app.route("/", openapiRoutes);
+
+app.route("/", wellKnownRoutes);
+
+app.route("/", oauthRoutes);
 
 app.route("/v1", routes);
 

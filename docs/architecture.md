@@ -327,6 +327,49 @@ is what keeps a zero-org deployment free of audit rows. It is append-only by con
 update or delete helper exists, and `src/db/audit.ts` offers only an insert and a keyset list.
 Removing a member leaves their rows behind, which is the point of a log.
 
+### OAuth for MCP clients
+
+`src/core/oauth.ts` holds the flow, `src/http/routes/oauth.ts` the six routes and
+`src/http/oauth-pages.ts` the two forms and the error page. It exists because an MCP client that
+cannot be given a static header has no way to hold an `it_` key, and the MCP authorization
+specification says how such a client asks for one: read `/.well-known/oauth-protected-resource`,
+read `/.well-known/oauth-authorization-server`, register itself, send the user to the authorize
+page, exchange the code.
+
+**The token is an `api_keys` row.** That is the whole design. `exchangeToken` mints through the
+same path `createApiKey` uses, so an OAuth token is listed by `GET /v1/api-keys`, revoked by
+`DELETE /v1/api-keys/:key_id`, carries `scopes` and `activated_at` like any other key, and needs no
+second code path in `authenticate`. A token store, an expiry, a refresh grant and a revocation
+endpoint are all things the key table already answers.
+
+**Authentication is the existing OTP.** The authorize page asks for the account's email and sends
+the same six-digit code `signup` sends, under the same per-account hourly cap, and `consumeOtp` in
+`src/core/accounts.ts` is shared with `verify` so the expiry, the attempt count and the
+mark-as-verified are one implementation. Proving control of the address is exactly what `verify`
+proves, so a correct code here verifies the account too. There are no passwords and no sessions
+beyond the ten-minute row that carries the in-progress authorization.
+
+**Three tables, all short-lived but two of them.** `oauth_clients` is permanent, one row per
+registered client. `oauth_sessions` is the authorization in progress: client, redirect URI, state,
+challenge, and the account once the email step passes, expiring in 10 minutes. `oauth_codes` holds
+the hash of the authorization code alone, expiring in 60 seconds and single use, bound to the
+client, the redirect URI and the challenge so a stolen code is useless without the verifier. Both
+short-lived tables are pruned with one `DELETE ... WHERE expires_at < ?` on each authorize and each
+token call, so no cron is needed and an abandoned authorization costs one row until the next
+caller.
+
+**Public clients only, so PKCE carries the security.** There is no client secret to protect, and
+`code_challenge_methods_supported` is `S256` alone. An unknown `client_id` or an unregistered
+`redirect_uri` renders an error page instead of redirecting, so the endpoint cannot be turned into
+an open redirector; every later failure redirects with `error` as RFC 6749 requires, because by
+then the redirect URI is known to belong to the client.
+
+`/mcp` answers 401 with `WWW-Authenticate: Bearer resource_metadata="..."` for an `Authorization`
+header that resolves to nothing, which is what makes a client discover the flow and what makes a
+revoked token restart it. A pending key still gets the onboarding tool set, since calling `verify`
+is the only thing a pending key is for, and a request with no header at all keeps the
+unauthenticated tool set that `docs/api.md` promises.
+
 ## MCP
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
@@ -384,6 +427,9 @@ numbered migration.
 | `orgs` | `org_id` (`org_`) | `name`; one row per deployment for now |
 | `memberships` | `(org_id, account_id)` | `role` (`admin` or `member`), indexed on `account_id` |
 | `invites` | `invite_id` (`inv_`) | `org_id`, `email`, `role`, `invited_by`, `accepted_at` null while open; indexed on `(org_id, email)` |
+| `oauth_clients` | `client_id` (`oac_`) | `name`, `redirect_uris_json`; one row per registered MCP client, permanent |
+| `oauth_sessions` | `session_id` (`oas_`) | `client_id`, `redirect_uri`, `state`, `code_challenge`, `scope`, `account_id` null until the email step passes, `expires_at` 10 minutes out |
+| `oauth_codes` | `code_hash` | `session_id`, `client_id`, `account_id`, `redirect_uri`, `code_challenge`, `expires_at` 60 seconds out, `used_at` null until redeemed; the code itself is never stored |
 | `audit_log` | `audit_id` (`aud_`) | `org_id`, `account_id`, `action`, `target`; indexed on `(org_id, created_at)`, append-only, and `account_id` carries no foreign key so a row outlives the account |
 | `messages_fts` | `message_id` (UNINDEXED) | FTS5 index over `subject`, `text`, `from_addr`, `from_name`; `inbox_id` UNINDEXED |
 
@@ -459,6 +505,16 @@ whose check fails throws before a single statement is queued.
 **`*_json` columns are parsed in `src/core/serialize.ts` and nowhere else**, and every `src/db`
 function takes `db: D1Database` first, binds every parameter, and returns rows whose fields are the
 literal column names.
+
+**Onboarding is an emailed OTP, and there is no dashboard, with one exception.** The exception is
+`GET /oauth/authorize`, the page that asks an account holder for their address and then for the
+emailed code. It exists because the OAuth authorization step is defined as a browser redirect to a
+page the user sees; a client cannot complete the flow against JSON. It is deliberately the whole of
+the human-facing surface: two forms and an error page, rendered by template functions in
+`src/http/oauth-pages.ts` that escape every value they interpolate. It carries no JavaScript, no
+external asset and no state beyond a hidden session id, so there is no build step, no bundle to
+keep current, and nothing on the page that a stranger's registered client name could turn into
+script. Everything else stays API-only.
 
 **Onboarding is an emailed OTP, and there is no dashboard.** An agent gets a working key and an
 inbox from one unauthenticated `POST /v1/agent/signup`, and only outbound reach is gated: until the
