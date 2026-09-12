@@ -286,12 +286,12 @@ describe("parseD1Databases", () => {
  ⛅️ wrangler 4.129.1
 [
   { "uuid": "0f6a1c2e-8b3d-4e5f-9a7b-1c2d3e4f5a6b", "name": "intray", "version": "production" },
-  { "uuid": "aaaaaaaa-04e2-4e07-b30e-e4b2e1e2b616", "name": "other" }
+  { "uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "name": "other" }
 ]
 `;
     expect(parseD1Databases(output)).toEqual([
       { name: "intray", uuid: "0f6a1c2e-8b3d-4e5f-9a7b-1c2d3e4f5a6b" },
-      { name: "other", uuid: "aaaaaaaa-04e2-4e07-b30e-e4b2e1e2b616" },
+      { name: "other", uuid: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
     ]);
   });
 

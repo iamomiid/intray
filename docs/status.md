@@ -8,6 +8,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | Subsystem | Status | Notes |
 | --- | --- | --- |
 | scaffold | done | pnpm, `wrangler.jsonc`, tsconfig, biome, vitest-in-workerd |
+| ci | done | `.github/workflows/ci.yml` on pull requests and `main`: lint, typecheck, tests, forbidden-identifier check, gitleaks |
 | db | done | one module per table plus `rows.ts` and `index.ts`; keyset pagination |
 | lib | done | `address`, `hash`, `otp`, `pagination`, `limits`, `time`, `rfc`, `errors`, `ids` |
 | accounts, keys, OTP | done | signup, verify, me, authenticate, key create/list/revoke; pending keys for repeat signup; `ALLOWED_SIGNUP_EMAILS` |
