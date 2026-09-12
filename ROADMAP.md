@@ -75,12 +75,6 @@ its webhooks, SMTP from DSN mail arriving at the inbound adapter.
 Replace `wait_for_message`'s D1 polling with a push-style wait backed by a Durable Object per inbox.
 Lower latency and no polling cost; the D1 path stays as the fallback.
 
-## 7. OpenAPI document
-
-Publish `GET /openapi.json` describing every `/v1` endpoint, object, and error, generated from the
-same schemas the adapters validate with, so a client can be generated from it. Generated clients
-are out of scope and are not published.
-
 ## 8. OAuth for MCP clients
 
 Authorization-code flow for MCP clients that cannot set static headers, issuing tokens that map to

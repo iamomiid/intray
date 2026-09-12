@@ -5,6 +5,10 @@ below that differs between the two surfaces is a bug.
 
 All JSON field names are snake_case. All timestamps are integer Unix milliseconds.
 
+`GET /openapi.json` is the machine-readable form of this file: an OpenAPI 3.1 document generated
+from the same zod schemas in `src/schemas/` that the MCP adapter validates with, so a client can be
+generated from it.
+
 ## Auth
 
 Every `/v1` endpoint except `POST /v1/agent/signup` requires an API key, sent as either
@@ -62,13 +66,14 @@ Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm 
 
 | Status | Code |
 | --- | --- |
-| 400 | `bad_request`, `invalid_address`, `invalid_code` |
+| 400 | `bad_request`, `invalid_address`, `invalid_code`, `e_recipient_suppressed`, `e_too_many_recipients`, `e_content_too_large`, `e_header_not_allowed` |
 | 401 | `unauthorized` |
 | 403 | `forbidden`, `message_rejected`, `signup_closed` |
 | 404 | `not_found` |
 | 409 | `conflict`, `inbox_taken` |
 | 429 | `too_many_requests`, `quota_exceeded` |
 | 500 | `internal_error` |
+| 503 | `sender_not_verified` |
 
 `message_rejected` is returned when an unverified account tries to send to any address other than
 its own `accounts.email`. `signup_closed` is returned when `ALLOWED_SIGNUP_EMAILS` is set and the
@@ -78,6 +83,11 @@ secret is wrong or disabled, when a member calls an admin-only org endpoint, and
 to an inbox calls an account-level endpoint. `quota_exceeded` is returned when a send, reply, forward or draft
 send would pass `QUOTA_MESSAGES_SENT_PER_MONTH`; inbound mail past a quota is refused at the SMTP
 transaction with `552 quota exceeded` and never becomes an API error.
+
+The four `e_*` codes and `sender_not_verified` come from the send binding and only ever appear on a
+send, reply, forward or draft send: they are the binding's `E_RECIPIENT_SUPPRESSED`,
+`E_TOO_MANY_RECIPIENTS`, `E_CONTENT_TOO_LARGE`, `E_HEADER_NOT_ALLOWED` and
+`E_SENDER_NOT_VERIFIED` lowercased, and `E_RATE_LIMIT_EXCEEDED` becomes `too_many_requests`.
 
 ## Status codes
 
@@ -599,6 +609,13 @@ quotas, and its own usage is still counted.
 | GET | `/healthz` | `{ok: true}` |
 | GET | `/skill.md` | onboarding markdown |
 | GET | `/llms.txt` | the same markdown |
+| GET | `/openapi.json` | the OpenAPI 3.1 document for this contract |
+
+`/openapi.json` needs no key, is `application/json` under `cache-control: public, max-age=300`, and
+is built once per isolate. `servers` carries `PUBLIC_URL`, `components.securitySchemes` covers both
+the bearer key and the `X-API-Key` header, and every operation names the error codes above with the
+error envelope as its body. It describes the four service endpoints as well as every `/v1` one; a
+test walks the Hono router and fails when a route is added without its entry.
 
 ## MCP
 

@@ -55,6 +55,7 @@ src/http/               Hono app, auth middleware, /v1 routes
 src/mcp/                MCP handler, server factory, tool registration
 src/email/              inbound handler, threading, outbound builders
 src/core/               service layer: the only place with business logic
+src/schemas/            zod shapes shared by the MCP tools and the OpenAPI document
 src/db/                 typed D1 helpers
 src/lib/                ids, otp, hash, errors, pagination, address, limits
 public/skill.md         onboarding instructions served at /skill.md and /llms.txt

@@ -1,0 +1,1149 @@
+import { registry as createRegistry, toJSONSchema, type z } from "zod";
+import {
+  accountObject,
+  addressObject,
+  apiKeyObject,
+  apiKeyPage,
+  attachmentObject,
+  attachmentParams,
+  auditObject,
+  auditPage,
+  batchDeleteBody,
+  batchLabelsBody,
+  createApiKeyBody,
+  createDraftBody,
+  createdApiKeyObject,
+  createdWebhookObject,
+  createInboxBody,
+  createInviteBody,
+  createOrgBody,
+  createOrgHeaders,
+  createWebhookBody,
+  deletedCountObject,
+  deletedObject,
+  draftAttachmentObject,
+  draftObject,
+  draftPage,
+  draftParams,
+  errorEnvelope,
+  forwardBody,
+  healthObject,
+  inboxObject,
+  inboxPage,
+  inboxParams,
+  inviteObject,
+  invitePage,
+  inviteParams,
+  keyParams,
+  listAuditQuery,
+  listDraftsQuery,
+  listInboxesQuery,
+  listMessagesQuery,
+  listThreadsQuery,
+  memberObject,
+  memberPage,
+  memberParams,
+  meResult,
+  messageList,
+  messageObject,
+  messagePage,
+  messageParams,
+  orgDetailObject,
+  orgMembershipPage,
+  orgObject,
+  orgParams,
+  provisionInboxBody,
+  removedObject,
+  replyBody,
+  revokedObject,
+  searchMessagesQuery,
+  sendMessageBody,
+  signupBody,
+  signupResult,
+  threadDetailObject,
+  threadObject,
+  threadPage,
+  threadParams,
+  updateDraftBody,
+  updateMemberBody,
+  updateMessageLabelsBody,
+  updateThreadLabelsBody,
+  updateWebhookBody,
+  usageLimitsObject,
+  usageObject,
+  verifyBody,
+  verifyResult,
+  waitForMessageQuery,
+  webhookObject,
+  webhookPage,
+  webhookParams,
+} from "../schemas/index";
+
+type Json = Record<string, unknown>;
+
+type ResultContent =
+  | { kind: "json"; schema: z.ZodType }
+  | { kind: "media"; media: string; schema: Json };
+
+interface RouteSpec {
+  method: "get" | "post" | "patch" | "delete";
+  path: string;
+  operationId: string;
+  tag: string;
+  summary: string;
+  description?: string;
+  auth: boolean;
+  params?: z.ZodObject;
+  query?: z.ZodObject;
+  headers?: z.ZodObject;
+  body?: z.ZodObject;
+  bodyRequired?: boolean;
+  status: number;
+  result: ResultContent;
+  errors: number[];
+}
+
+const COMPONENTS = {
+  address: addressObject,
+  account: accountObject,
+  api_key: apiKeyObject,
+  created_api_key: createdApiKeyObject,
+  api_key_page: apiKeyPage,
+  inbox: inboxObject,
+  inbox_page: inboxPage,
+  org: orgObject,
+  org_detail: orgDetailObject,
+  org_membership_page: orgMembershipPage,
+  member: memberObject,
+  member_page: memberPage,
+  invite: inviteObject,
+  invite_page: invitePage,
+  audit_entry: auditObject,
+  audit_page: auditPage,
+  usage_limits: usageLimitsObject,
+  usage: usageObject,
+  thread: threadObject,
+  thread_detail: threadDetailObject,
+  thread_page: threadPage,
+  attachment: attachmentObject,
+  message: messageObject,
+  message_page: messagePage,
+  message_list: messageList,
+  draft_attachment: draftAttachmentObject,
+  draft: draftObject,
+  draft_page: draftPage,
+  webhook: webhookObject,
+  created_webhook: createdWebhookObject,
+  webhook_page: webhookPage,
+  health: healthObject,
+  deleted: deletedObject,
+  deleted_count: deletedCountObject,
+  revoked: revokedObject,
+  removed: removedObject,
+  signup_result: signupResult,
+  verify_result: verifyResult,
+  me_result: meResult,
+  error: errorEnvelope,
+  signup_body: signupBody,
+  verify_body: verifyBody,
+  create_api_key_body: createApiKeyBody,
+  create_inbox_body: createInboxBody,
+  create_org_body: createOrgBody,
+  create_invite_body: createInviteBody,
+  update_member_body: updateMemberBody,
+  provision_inbox_body: provisionInboxBody,
+  update_thread_labels_body: updateThreadLabelsBody,
+  update_message_labels_body: updateMessageLabelsBody,
+  batch_labels_body: batchLabelsBody,
+  batch_delete_body: batchDeleteBody,
+  send_message_body: sendMessageBody,
+  reply_body: replyBody,
+  forward_body: forwardBody,
+  create_draft_body: createDraftBody,
+  update_draft_body: updateDraftBody,
+  create_webhook_body: createWebhookBody,
+  update_webhook_body: updateWebhookBody,
+} as const satisfies Record<string, z.ZodType>;
+
+const COMPONENT_NAMES = new Map<z.ZodType, string>(
+  Object.entries(COMPONENTS).map(([name, schema]) => [schema as z.ZodType, name]),
+);
+
+const COMPONENT_REGISTRY = Object.entries(COMPONENTS).reduce(
+  (accumulated, [name, schema]) => accumulated.add(schema as z.ZodType, { id: name }),
+  createRegistry<{ id: string }>(),
+);
+
+const ERROR_DESCRIPTIONS: Record<number, string> = {
+  400: "bad_request, invalid_address, invalid_code, e_recipient_suppressed, e_too_many_recipients, e_content_too_large, e_header_not_allowed",
+  401: "unauthorized",
+  403: "forbidden, message_rejected, signup_closed",
+  404: "not_found",
+  409: "conflict, inbox_taken",
+  429: "too_many_requests, quota_exceeded",
+  500: "internal_error",
+  503: "sender_not_verified",
+};
+
+const PARAMETER_DESCRIPTIONS: Record<string, string> = {
+  inbox_id: "the inbox's full email address, URL-encoded in the path",
+  message_id: "the message id",
+  thread_id: "the thread id",
+  draft_id: "the draft id",
+  webhook_id: "the webhook id",
+  attachment_id: "the attachment id",
+  key_id: "the api key id",
+  org_id: "the org id",
+  invite_id: "the invite id",
+  account_id: "the member's account id",
+  "x-admin-secret": "the deployment's ADMIN_SECRET, at least 32 characters",
+  limit: "page size, default 25, capped at 100",
+  page_token: "the previous response's next_page_token",
+  q: "plain words, at most 16; every word must match and each matches by prefix",
+  labels: "comma-separated list; matches messages carrying all of them",
+  from: "substring match on the sender address",
+  to: "substring match on the recipient addresses",
+  subject: "substring match on the subject",
+  since: "lower bound on created_at, Unix milliseconds",
+  before: "upper bound on created_at, Unix milliseconds",
+  timeout: "seconds to block, default 30, capped at 55",
+  status: "filter drafts by status",
+};
+
+const binaryContent = (media: string): ResultContent => ({
+  kind: "media",
+  media,
+  schema: { type: "string", format: "binary" },
+});
+
+const textContent = (media: string): ResultContent => ({
+  kind: "media",
+  media,
+  schema: { type: "string" },
+});
+
+const jsonContent = (schema: z.ZodType): ResultContent => ({ kind: "json", schema });
+
+const SEND_ERRORS = [400, 403, 404, 429, 503];
+
+const ROUTES: readonly RouteSpec[] = [
+  {
+    method: "post",
+    path: "/v1/agent/signup",
+    operationId: "signup",
+    tag: "Agent",
+    summary: "Create an account, its first inbox, and an API key",
+    description:
+      "Unauthenticated, idempotent by email, and rate-limited per IP. An address that already has an account gets a pending key and a fresh code instead of a second inbox.",
+    auth: false,
+    body: signupBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(signupResult),
+    errors: [400, 403, 429],
+  },
+  {
+    method: "post",
+    path: "/v1/agent/verify",
+    operationId: "verify",
+    tag: "Agent",
+    summary: "Exchange the emailed code",
+    description:
+      "The one endpoint a pending key may call. The correct code activates that key, revokes every other key on the account, and marks the account verified.",
+    auth: true,
+    body: verifyBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(verifyResult),
+    errors: [400, 429],
+  },
+  {
+    method: "get",
+    path: "/v1/auth/me",
+    operationId: "authMe",
+    tag: "Agent",
+    summary: "Return the account, its inbox count, and the key id in use",
+    auth: true,
+    status: 200,
+    result: jsonContent(meResult),
+    errors: [],
+  },
+  {
+    method: "get",
+    path: "/v1/api-keys",
+    operationId: "listApiKeys",
+    tag: "API keys",
+    summary: "List the account's API keys",
+    description: "Never paginated; next_page_token is always null.",
+    auth: true,
+    status: 200,
+    result: jsonContent(apiKeyPage),
+    errors: [403],
+  },
+  {
+    method: "post",
+    path: "/v1/api-keys",
+    operationId: "createApiKey",
+    tag: "API keys",
+    summary: "Mint another API key",
+    description:
+      'The full key is returned only here. scopes defaults to ["*"]; a list of inbox:<address> entries mints a key that reaches those inboxes alone and no account-level operation, and the two forms may not be mixed.',
+    auth: true,
+    body: createApiKeyBody,
+    status: 201,
+    result: jsonContent(createdApiKeyObject),
+    errors: [400, 403],
+  },
+  {
+    method: "delete",
+    path: "/v1/api-keys/{key_id}",
+    operationId: "revokeApiKey",
+    tag: "API keys",
+    summary: "Revoke an API key",
+    auth: true,
+    params: keyParams,
+    status: 200,
+    result: jsonContent(revokedObject),
+    errors: [403, 404],
+  },
+  {
+    method: "post",
+    path: "/v1/orgs",
+    operationId: "createOrg",
+    tag: "Orgs",
+    summary: "Bootstrap company mode and become the org's admin",
+    description:
+      "Needs an authenticated, verified account and the deployment's ADMIN_SECRET in the x-admin-secret header. One org per deployment, so a second call answers conflict; once the org exists signup is invite-only.",
+    auth: true,
+    headers: createOrgHeaders,
+    body: createOrgBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(orgObject),
+    errors: [400, 403, 409],
+  },
+  {
+    method: "get",
+    path: "/v1/orgs",
+    operationId: "listOrgs",
+    tag: "Orgs",
+    summary: "List the orgs the account belongs to with its role in each",
+    description: "Never paginated; empty for the operator principal, which holds no membership.",
+    auth: true,
+    status: 200,
+    result: jsonContent(orgMembershipPage),
+    errors: [403],
+  },
+  {
+    method: "get",
+    path: "/v1/orgs/{org_id}",
+    operationId: "getOrg",
+    tag: "Orgs",
+    summary: "Fetch one org with its member count",
+    description: "An account outside the org gets not_found, the same answer as an unknown org.",
+    auth: true,
+    params: orgParams,
+    status: 200,
+    result: jsonContent(orgDetailObject),
+    errors: [403, 404],
+  },
+  {
+    method: "post",
+    path: "/v1/orgs/{org_id}/invites",
+    operationId: "createInvite",
+    tag: "Orgs",
+    summary: "Invite an email address to the org",
+    description:
+      "Admins only. Nothing is emailed here: the address accepts by calling POST /v1/agent/signup. An address that is already a member, and a second open invite for it, answer conflict.",
+    auth: true,
+    params: orgParams,
+    body: createInviteBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(inviteObject),
+    errors: [400, 403, 404, 409],
+  },
+  {
+    method: "get",
+    path: "/v1/orgs/{org_id}/invites",
+    operationId: "listInvites",
+    tag: "Orgs",
+    summary: "List the org's open invites, newest first",
+    description: "Admins only; never paginated.",
+    auth: true,
+    params: orgParams,
+    status: 200,
+    result: jsonContent(invitePage),
+    errors: [403, 404],
+  },
+  {
+    method: "delete",
+    path: "/v1/orgs/{org_id}/invites/{invite_id}",
+    operationId: "revokeInvite",
+    tag: "Orgs",
+    summary: "Withdraw an open invite",
+    description: "Admins only. An accepted or unknown invite answers not_found.",
+    auth: true,
+    params: inviteParams,
+    status: 200,
+    result: jsonContent(revokedObject),
+    errors: [403, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/orgs/{org_id}/members",
+    operationId: "listMembers",
+    tag: "Orgs",
+    summary: "List the org's members with their role, email and inbox count",
+    description: "Open to every member; never paginated.",
+    auth: true,
+    params: orgParams,
+    status: 200,
+    result: jsonContent(memberPage),
+    errors: [403, 404],
+  },
+  {
+    method: "patch",
+    path: "/v1/orgs/{org_id}/members/{account_id}",
+    operationId: "updateMember",
+    tag: "Orgs",
+    summary: "Change a member's role",
+    description: "Admins only. Demoting the last admin answers conflict.",
+    auth: true,
+    params: memberParams,
+    body: updateMemberBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(memberObject),
+    errors: [400, 403, 404, 409],
+  },
+  {
+    method: "delete",
+    path: "/v1/orgs/{org_id}/members/{account_id}",
+    operationId: "removeMember",
+    tag: "Orgs",
+    summary: "Remove a member and revoke every API key on their account",
+    description:
+      "Admins only. Their inboxes, threads and messages are left alone. Removing the last admin answers conflict.",
+    auth: true,
+    params: memberParams,
+    status: 200,
+    result: jsonContent(removedObject),
+    errors: [403, 404, 409],
+  },
+  {
+    method: "post",
+    path: "/v1/orgs/{org_id}/inboxes",
+    operationId: "provisionInbox",
+    tag: "Orgs",
+    summary: "Create an inbox owned by a member of the org",
+    description:
+      "Admins only. Runs the same rules as POST /v1/inboxes, and the inbox counts against that member's INBOX_LIMIT rather than the admin's.",
+    auth: true,
+    params: orgParams,
+    body: provisionInboxBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(inboxObject),
+    errors: [400, 403, 404, 409],
+  },
+  {
+    method: "get",
+    path: "/v1/orgs/{org_id}/audit",
+    operationId: "listAudit",
+    tag: "Orgs",
+    summary: "Read the org's append-only audit log, newest first",
+    description:
+      "Admins only. Keyset-paginated by created_at descending, breaking ties on audit_id descending.",
+    auth: true,
+    params: orgParams,
+    query: listAuditQuery,
+    status: 200,
+    result: jsonContent(auditPage),
+    errors: [400, 403, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes",
+    operationId: "listInboxes",
+    tag: "Inboxes",
+    summary: "List the account's inboxes, newest first",
+    auth: true,
+    query: listInboxesQuery,
+    status: 200,
+    result: jsonContent(inboxPage),
+    errors: [400],
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes",
+    operationId: "createInbox",
+    tag: "Inboxes",
+    summary: "Create an inbox",
+    description:
+      "domain must be one of MAIL_DOMAINS and defaults to the first. display_name is the From name on everything the inbox sends.",
+    auth: true,
+    body: createInboxBody,
+    status: 201,
+    result: jsonContent(inboxObject),
+    errors: [400, 403, 409],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}",
+    operationId: "getInbox",
+    tag: "Inboxes",
+    summary: "Fetch one inbox by its full address",
+    auth: true,
+    params: inboxParams,
+    status: 200,
+    result: jsonContent(inboxObject),
+    errors: [404],
+  },
+  {
+    method: "delete",
+    path: "/v1/inboxes/{inbox_id}",
+    operationId: "deleteInbox",
+    tag: "Inboxes",
+    summary: "Delete an inbox with every thread, message and stored object under it",
+    auth: true,
+    params: inboxParams,
+    status: 200,
+    result: jsonContent(deletedObject),
+    errors: [404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/threads",
+    operationId: "listThreads",
+    tag: "Threads",
+    summary: "List an inbox's threads by last_message_at descending",
+    auth: true,
+    params: inboxParams,
+    query: listThreadsQuery,
+    status: 200,
+    result: jsonContent(threadPage),
+    errors: [400, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/threads/{thread_id}",
+    operationId: "getThread",
+    tag: "Threads",
+    summary: "Fetch one thread with its messages ordered by created_at",
+    auth: true,
+    params: threadParams,
+    status: 200,
+    result: jsonContent(threadDetailObject),
+    errors: [404],
+  },
+  {
+    method: "patch",
+    path: "/v1/inboxes/{inbox_id}/threads/{thread_id}",
+    operationId: "updateThreadLabels",
+    tag: "Threads",
+    summary: "Add and remove labels across every message in a thread",
+    description:
+      'At least one of add and remove must be a non-empty array. Archiving is add ["archived"], remove ["unread"].',
+    auth: true,
+    params: threadParams,
+    body: updateThreadLabelsBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(threadDetailObject),
+    errors: [400, 404],
+  },
+  {
+    method: "delete",
+    path: "/v1/inboxes/{inbox_id}/threads/{thread_id}",
+    operationId: "deleteThread",
+    tag: "Threads",
+    summary: "Delete a thread with every message under it and their stored objects",
+    auth: true,
+    params: threadParams,
+    status: 200,
+    result: jsonContent(deletedObject),
+    errors: [404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/messages",
+    operationId: "listMessages",
+    tag: "Messages",
+    summary: "List an inbox's messages by created_at descending",
+    auth: true,
+    params: inboxParams,
+    query: listMessagesQuery,
+    status: 200,
+    result: jsonContent(messagePage),
+    errors: [400, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/messages/search",
+    operationId: "searchMessages",
+    tag: "Messages",
+    summary: "Full-text search over subjects, bodies and senders",
+    description:
+      "Ordered by relevance with a subject hit weighted above a body hit; page_token encodes a position in the result set rather than a message.",
+    auth: true,
+    params: inboxParams,
+    query: searchMessagesQuery,
+    status: 200,
+    result: jsonContent(messagePage),
+    errors: [400, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/messages/wait",
+    operationId: "waitForMessage",
+    tag: "Messages",
+    summary: "Block until a message newer than since arrives, or until timeout",
+    description: "Polls every 2 seconds, returns items ascending, and an empty array on timeout.",
+    auth: true,
+    params: inboxParams,
+    query: waitForMessageQuery,
+    status: 200,
+    result: jsonContent(messagePage),
+    errors: [400, 404],
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes/{inbox_id}/messages/send",
+    operationId: "sendMessage",
+    tag: "Messages",
+    summary: "Send a new message from an inbox",
+    description:
+      "At most 50 recipients and 32 attachments, and the whole message must stay under 5 MiB. from may only be the inbox's own address, optionally subaddressed.",
+    auth: true,
+    params: inboxParams,
+    body: sendMessageBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(messageObject),
+    errors: SEND_ERRORS,
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes/{inbox_id}/messages/labels",
+    operationId: "batchUpdateLabels",
+    tag: "Messages",
+    summary: "Add and remove labels across up to 100 messages",
+    description:
+      "Every id must belong to the inbox; one that does not fails the whole request and changes nothing.",
+    auth: true,
+    params: inboxParams,
+    body: batchLabelsBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(messageList),
+    errors: [400, 404],
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes/{inbox_id}/messages/delete",
+    operationId: "batchDeleteMessages",
+    tag: "Messages",
+    summary: "Delete up to 100 messages and their stored objects",
+    description: "Drops any thread left empty and recounts the threads that survive.",
+    auth: true,
+    params: inboxParams,
+    body: batchDeleteBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(deletedCountObject),
+    errors: [400, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}",
+    operationId: "getMessage",
+    tag: "Messages",
+    summary: "Fetch one message with its attachment metadata",
+    auth: true,
+    params: messageParams,
+    status: 200,
+    result: jsonContent(messageObject),
+    errors: [404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}/raw",
+    operationId: "getRawMessage",
+    tag: "Messages",
+    summary: "Download the stored raw MIME of an inbound message",
+    auth: true,
+    params: messageParams,
+    status: 200,
+    result: binaryContent("message/rfc822"),
+    errors: [404],
+  },
+  {
+    method: "patch",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}",
+    operationId: "updateMessageLabels",
+    tag: "Messages",
+    summary: "Replace a message's labels with the given set",
+    auth: true,
+    params: messageParams,
+    body: updateMessageLabelsBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(messageObject),
+    errors: [400, 404],
+  },
+  {
+    method: "delete",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}",
+    operationId: "deleteMessage",
+    tag: "Messages",
+    summary: "Delete a message and its stored objects",
+    auth: true,
+    params: messageParams,
+    status: 200,
+    result: jsonContent(deletedObject),
+    errors: [404],
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}/reply",
+    operationId: "replyToMessage",
+    tag: "Messages",
+    summary: "Reply in the parent's thread",
+    description:
+      "Sets In-Reply-To and References from the parent and prefixes the subject with Re: if it is not already.",
+    auth: true,
+    params: messageParams,
+    body: replyBody,
+    status: 201,
+    result: jsonContent(messageObject),
+    errors: SEND_ERRORS,
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}/forward",
+    operationId: "forwardMessage",
+    tag: "Messages",
+    summary: "Forward a message with its attachments and the original quoted",
+    auth: true,
+    params: messageParams,
+    body: forwardBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(messageObject),
+    errors: SEND_ERRORS,
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}/attachments/{attachment_id}",
+    operationId: "getAttachment",
+    tag: "Attachments",
+    summary: "Download an attachment's bytes",
+    description: "Carries the attachment's own content-type and a content-disposition filename.",
+    auth: true,
+    params: attachmentParams,
+    status: 200,
+    result: binaryContent("application/octet-stream"),
+    errors: [404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/messages/{message_id}/attachments/{attachment_id}/text",
+    operationId: "getAttachmentText",
+    tag: "Attachments",
+    summary: "Read the text extracted from an attachment on ingest",
+    description: "404 not_found when text_status is anything but extracted.",
+    auth: true,
+    params: attachmentParams,
+    status: 200,
+    result: textContent("text/plain"),
+    errors: [404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/drafts",
+    operationId: "listDrafts",
+    tag: "Drafts",
+    summary: "List an inbox's drafts by updated_at descending",
+    auth: true,
+    params: inboxParams,
+    query: listDraftsQuery,
+    status: 200,
+    result: jsonContent(draftPage),
+    errors: [400, 404],
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes/{inbox_id}/drafts",
+    operationId: "createDraft",
+    tag: "Drafts",
+    summary: "Compose a message without sending it",
+    description:
+      "The body is validated by building the message the send would build, so an unsendable draft is refused here. send_at is Unix milliseconds in the future.",
+    auth: true,
+    params: inboxParams,
+    body: createDraftBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(draftObject),
+    errors: [400, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/inboxes/{inbox_id}/drafts/{draft_id}",
+    operationId: "getDraft",
+    tag: "Drafts",
+    summary: "Fetch one draft with its status, schedule and last error",
+    auth: true,
+    params: draftParams,
+    status: 200,
+    result: jsonContent(draftObject),
+    errors: [404],
+  },
+  {
+    method: "patch",
+    path: "/v1/inboxes/{inbox_id}/drafts/{draft_id}",
+    operationId: "updateDraft",
+    tag: "Drafts",
+    summary: "Change a draft's body or schedule",
+    description:
+      "Fields left out keep their value and the result is re-validated as a send. send_at null unschedules; a sending or sent draft answers conflict.",
+    auth: true,
+    params: draftParams,
+    body: updateDraftBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(draftObject),
+    errors: [400, 404, 409],
+  },
+  {
+    method: "delete",
+    path: "/v1/inboxes/{inbox_id}/drafts/{draft_id}",
+    operationId: "deleteDraft",
+    tag: "Drafts",
+    summary: "Delete a draft",
+    description: "A draft being sent right now answers conflict.",
+    auth: true,
+    params: draftParams,
+    status: 200,
+    result: jsonContent(deletedObject),
+    errors: [404, 409],
+  },
+  {
+    method: "post",
+    path: "/v1/inboxes/{inbox_id}/drafts/{draft_id}/send",
+    operationId: "sendDraft",
+    tag: "Drafts",
+    summary: "Send a draft now, whatever its send_at",
+    auth: true,
+    params: draftParams,
+    status: 201,
+    result: jsonContent(messageObject),
+    errors: [400, 403, 404, 409, 429, 503],
+  },
+  {
+    method: "get",
+    path: "/v1/webhooks",
+    operationId: "listWebhooks",
+    tag: "Webhooks",
+    summary: "List the account's webhooks",
+    description: "Never paginated; the secret is never returned.",
+    auth: true,
+    status: 200,
+    result: jsonContent(webhookPage),
+    errors: [403],
+  },
+  {
+    method: "post",
+    path: "/v1/webhooks",
+    operationId: "createWebhook",
+    tag: "Webhooks",
+    summary: "Register an https endpoint for message events",
+    description:
+      "events defaults to both names and every entry must be message.received or message.sent. The signing secret is returned only here. At most 10 webhooks per account.",
+    auth: true,
+    body: createWebhookBody,
+    bodyRequired: true,
+    status: 201,
+    result: jsonContent(createdWebhookObject),
+    errors: [400, 403, 409],
+  },
+  {
+    method: "get",
+    path: "/v1/webhooks/{webhook_id}",
+    operationId: "getWebhook",
+    tag: "Webhooks",
+    summary: "Fetch one webhook by id",
+    auth: true,
+    params: webhookParams,
+    status: 200,
+    result: jsonContent(webhookObject),
+    errors: [403, 404],
+  },
+  {
+    method: "patch",
+    path: "/v1/webhooks/{webhook_id}",
+    operationId: "updateWebhook",
+    tag: "Webhooks",
+    summary: "Change a webhook's url, events, description or active flag",
+    description:
+      "Omitted fields are left alone; active false stops delivery without rotating the secret.",
+    auth: true,
+    params: webhookParams,
+    body: updateWebhookBody,
+    bodyRequired: true,
+    status: 200,
+    result: jsonContent(webhookObject),
+    errors: [400, 403, 404],
+  },
+  {
+    method: "delete",
+    path: "/v1/webhooks/{webhook_id}",
+    operationId: "deleteWebhook",
+    tag: "Webhooks",
+    summary: "Delete a webhook",
+    auth: true,
+    params: webhookParams,
+    status: 200,
+    result: jsonContent(deletedObject),
+    errors: [403, 404],
+  },
+  {
+    method: "get",
+    path: "/v1/usage",
+    operationId: "getUsage",
+    tag: "Usage",
+    summary: "Return the account's counters and quotas for the current UTC month",
+    description:
+      "storage_bytes is a running total a new month does not reset, and inboxes is counted live. A null limit is unlimited. Quotas are enforced where the work happens, not here.",
+    auth: true,
+    status: 200,
+    result: jsonContent(usageObject),
+    errors: [],
+  },
+  {
+    method: "get",
+    path: "/healthz",
+    operationId: "health",
+    tag: "Service",
+    summary: "Liveness probe",
+    auth: false,
+    status: 200,
+    result: jsonContent(healthObject),
+    errors: [],
+  },
+  {
+    method: "get",
+    path: "/skill.md",
+    operationId: "skillMarkdown",
+    tag: "Service",
+    summary: "The onboarding instructions an agent reads to sign itself up",
+    auth: false,
+    status: 200,
+    result: textContent("text/markdown"),
+    errors: [],
+  },
+  {
+    method: "get",
+    path: "/llms.txt",
+    operationId: "llmsTxt",
+    tag: "Service",
+    summary: "The same onboarding markdown under its conventional name",
+    auth: false,
+    status: 200,
+    result: textContent("text/markdown"),
+    errors: [],
+  },
+  {
+    method: "get",
+    path: "/openapi.json",
+    operationId: "openapi",
+    tag: "Service",
+    summary: "This document",
+    auth: false,
+    status: 200,
+    result: { kind: "media", media: "application/json", schema: { type: "object" } },
+    errors: [],
+  },
+];
+
+function withoutSchemaKeywords(schema: Json): Json {
+  return Object.fromEntries(
+    Object.entries(schema).filter(([key]) => key !== "$schema" && key !== "$id"),
+  );
+}
+
+function inlineSchema(schema: z.ZodType): Json {
+  return withoutSchemaKeywords(toJSONSchema(schema) as Json);
+}
+
+function schemaRef(schema: z.ZodType): Json {
+  const name = COMPONENT_NAMES.get(schema);
+  return name === undefined ? inlineSchema(schema) : { $ref: `#/components/schemas/${name}` };
+}
+
+function describedParameter(name: string, location: string, required: boolean, schema: Json): Json {
+  const description = PARAMETER_DESCRIPTIONS[name];
+  return {
+    name,
+    in: location,
+    required,
+    schema,
+    ...(description === undefined ? {} : { description }),
+  };
+}
+
+function parameters(
+  location: "path" | "query" | "header",
+  schema: z.ZodObject | undefined,
+): Json[] {
+  if (schema === undefined) {
+    return [];
+  }
+  const generated = inlineSchema(schema);
+  const properties = (generated.properties ?? {}) as Record<string, Json>;
+  const required = new Set((generated.required ?? []) as string[]);
+  return Object.entries(properties).map(([name, property]) =>
+    describedParameter(name, location, location === "path" ? true : required.has(name), property),
+  );
+}
+
+function requestBody(route: RouteSpec): Json {
+  if (route.body === undefined) {
+    return {};
+  }
+  return {
+    requestBody: {
+      required: route.bodyRequired === true,
+      content: { "application/json": { schema: schemaRef(route.body) } },
+    },
+  };
+}
+
+function successResponse(route: RouteSpec): Json {
+  const content =
+    route.result.kind === "json"
+      ? { "application/json": { schema: schemaRef(route.result.schema) } }
+      : { [route.result.media]: { schema: route.result.schema } };
+  return { [String(route.status)]: { description: "success", content } };
+}
+
+function errorResponses(statuses: number[]): Json {
+  return Object.fromEntries(
+    statuses.map((status) => [
+      String(status),
+      {
+        description: ERROR_DESCRIPTIONS[status] ?? "error",
+        content: { "application/json": { schema: schemaRef(errorEnvelope) } },
+      },
+    ]),
+  );
+}
+
+function routeErrorStatuses(route: RouteSpec): number[] {
+  const withAuth = route.auth ? [401, ...route.errors] : route.errors;
+  return [...new Set([...withAuth, 500])].sort((left, right) => left - right);
+}
+
+function operation(route: RouteSpec): Json {
+  return {
+    operationId: route.operationId,
+    tags: [route.tag],
+    summary: route.summary,
+    ...(route.description === undefined ? {} : { description: route.description }),
+    ...(route.auth ? {} : { security: [] }),
+    parameters: [
+      ...parameters("path", route.params),
+      ...parameters("query", route.query),
+      ...parameters("header", route.headers),
+    ],
+    ...requestBody(route),
+    responses: { ...successResponse(route), ...errorResponses(routeErrorStatuses(route)) },
+  };
+}
+
+function paths(): Json {
+  const grouped = new Map<string, Json>();
+  for (const route of ROUTES) {
+    grouped.set(route.path, {
+      ...(grouped.get(route.path) ?? {}),
+      [route.method]: operation(route),
+    });
+  }
+  return Object.fromEntries(grouped);
+}
+
+function componentSchemas(): Json {
+  const generated = toJSONSchema(COMPONENT_REGISTRY, {
+    uri: (id) => `#/components/schemas/${id}`,
+  }).schemas as Record<string, Json>;
+  return Object.fromEntries(
+    Object.entries(generated).map(([name, schema]) => [name, withoutSchemaKeywords(schema)]),
+  );
+}
+
+const TAGS = [
+  { name: "Agent", description: "signup, verification and the calling principal" },
+  { name: "API keys", description: "mint, list and revoke keys on the account" },
+  { name: "Inboxes", description: "the addresses the account holds" },
+  { name: "Orgs", description: "company mode: the org, its invites, members and audit log" },
+  { name: "Threads", description: "conversations grouped from RFC identifiers" },
+  { name: "Messages", description: "read, search, wait for, label, send, reply and forward" },
+  { name: "Attachments", description: "attachment bytes and the text extracted on ingest" },
+  { name: "Drafts", description: "messages composed now and sent later" },
+  { name: "Webhooks", description: "per-account https endpoints for message events" },
+  { name: "Usage", description: "counters and quotas for the calling account" },
+  { name: "Service", description: "unauthenticated endpoints about the deployment itself" },
+];
+
+const DESCRIPTION = [
+  "The machine-readable form of docs/api.md, generated from the zod schemas the MCP adapter",
+  "validates with. All JSON field names are snake_case and all timestamps are integer Unix",
+  "milliseconds. Every /v1 endpoint except POST /v1/agent/signup requires an API key, sent as",
+  "either Authorization: Bearer it_... or X-API-Key: it_..., and the same key authenticates the",
+  "MCP server at /mcp.",
+].join(" ");
+
+function document(publicUrl: string): Json {
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "intray",
+      version: "v1",
+      description: DESCRIPTION,
+      license: { name: "MIT", identifier: "MIT" },
+    },
+    servers: [{ url: publicUrl }],
+    tags: TAGS,
+    security: [{ bearer_key: [] }, { api_key_header: [] }],
+    paths: paths(),
+    components: {
+      securitySchemes: {
+        bearer_key: {
+          type: "http",
+          scheme: "bearer",
+          description: "Authorization: Bearer it_...",
+        },
+        api_key_header: {
+          type: "apiKey",
+          in: "header",
+          name: "X-API-Key",
+          description: "X-API-Key: it_...",
+        },
+      },
+      schemas: componentSchemas(),
+    },
+  };
+}
+
+const documents = new Map<string, string>();
+
+export function openapiDocument(publicUrl: string): string {
+  const cached = documents.get(publicUrl);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const built = JSON.stringify(document(publicUrl));
+  documents.set(publicUrl, built);
+  return built;
+}
