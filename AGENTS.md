@@ -72,12 +72,13 @@ and `email_sending:write`, which the default `wrangler login` omits.
 
 ```
 pnpm run setup --domain agents.example.com [--email you@example.com]
-  [--allow-signup you@example.com] [--operator-token [value]] [--dmarc-reports]
-  [--accept-changes] [--yes]
+  [--allow-signup you@example.com] [--operator-token [value]] [--routing catch_all|per_inbox]
+  [--dmarc-reports] [--accept-changes] [--yes]
 ```
 
 The setup runs the whole of `docs/deploy.md` idempotently: D1, R2, migrations, vars, deploy,
-operator token, Email Routing, Email Sending, DMARC reports, destination address, mail domain. It
+operator token, Email Routing, Email Sending, DMARC reports, destination address, mail domain,
+routing mode and, in `per_inbox` mode, the routing token and one Email Routing rule per inbox. It
 needs no API token: it uses the OAuth token from `pnpm run login`, and `CLOUDFLARE_API_TOKEN` only
 if one is set. `--dmarc-reports` is the one step that an API token can do and the OAuth token
 cannot. Invoke it as `pnpm run setup`, not `pnpm setup`, which is pnpm's own command.

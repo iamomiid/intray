@@ -92,6 +92,12 @@ Flags:
   must be at least 32 characters. When the secret already exists and no value was given the step is
   skipped, so re-running does not rotate it; pass a value to replace it. Omit the flag entirely and
   the secret is left alone.
+- `--routing` — optional, `catch_all` or `per_inbox`. Writes `ROUTING_MODE`; omitted, the value
+  already in `wrangler.jsonc` is kept and a fresh deployment is `catch_all`. `catch_all` points the
+  zone's Email Routing catch-all at the Worker and lets the Worker refuse an unknown recipient with
+  `550 no such inbox`. `per_inbox` gives every inbox its own Email Routing rule and turns the
+  catch-all off, so the domain accepts mail only for addresses that exist and any other address on
+  the zone stays free for something else. See **Per-inbox routing** below.
 - `--dmarc-reports` — optional. Turns on Cloudflare DMARC Management for the zone, which collects
   the aggregate DMARC reports. Off without the flag. See **DMARC reports** below.
 - `--accept-changes` — optional. Approves, without asking, every change that alters existing mail
@@ -111,11 +117,11 @@ in full. Anything other than `y` or `yes` stops the setup at that step with `dec
 has been changed.
 
 `--yes` does not cover these; it only skips the confirmation of the printed plan.
-`--accept-changes` covers all six, and still prints each one so the log records what was applied.
+`--accept-changes` covers all seven, and still prints each one so the log records what was applied.
 Without a TTY and without `--accept-changes` the setup stops with the change described in the
 error, so CI has to opt in deliberately after reading it.
 
-The six:
+The seven:
 
 1. **Enable Email Routing on the apex** — apex mode only. Reads
    `GET /zones/{zone}/email/routing/dns` first and lists the records Cloudflare will add. When that
@@ -134,6 +140,10 @@ The six:
    explicit value was given. Not reversible: every client on the old token stops working at once
    and the old value cannot be read back.
 6. **Enable DMARC reports** — modifies the `_dmarc` record. Reversible.
+7. **Switch to per-inbox routing rules** — only in `per_inbox` mode and only while the catch-all is
+   still enabled. Shows the inbox count and how many rules will be created and deleted. The rules
+   are created first and the catch-all is disabled last. Reversible: `--routing catch_all`
+   re-enables it.
 
 Creating D1, R2 and the queue, applying migrations, writing vars, deploying, setting an operator
 token that did not exist, and turning the Email Routing setting on for a zone in subdomain mode
@@ -212,6 +222,18 @@ correct prints `skipped`.
     emails a verification link that has to be clicked.
 15. **Mail domain** — writes `MAIL_DOMAINS` to `--domain` exactly, subdomain included, and deploys
     again if the value changed.
+16. **Routing mode** — writes `ROUTING_MODE`, and in `per_inbox` mode `CLOUDFLARE_ZONE_ID` and
+    `WORKER_NAME` as well, then deploys again if anything changed.
+17. **Routing token** — in `per_inbox` mode, puts `CLOUDFLARE_API_TOKEN` from the environment or
+    `.env` into the `ROUTING_API_TOKEN` Worker secret unless that secret already exists. Skipped
+    with an explanation when there is no API token: the OAuth login from `pnpm run login` cannot
+    mint one, so the operator creates it. Skipped entirely in `catch_all` mode.
+18. **Routing rules** — in `per_inbox` mode, reconciles the zone's rules against the deployment's
+    inboxes, read with `wrangler d1 execute --remote`. Creates a rule for an inbox that has none and
+    writes the id back, adopts an existing rule an inbox row does not know about, and deletes a rule
+    that targets the Worker for an address with no inbox. Disables the catch-all last, once the
+    rules exist, when this run is the switch (approval 7). Skipped in `catch_all` mode, where step
+    11 keeps the catch-all pointed at the Worker.
 
 The mail domain is written last, after the mail steps have succeeded, so a declined DNS change or a
 failed sending onboarding never leaves a deployed Worker handing out addresses on a domain that
@@ -229,11 +251,48 @@ command line.
 ## wrangler.jsonc is edited by the setup
 
 The setup writes `d1_databases[0].database_id` and the `vars` block into `wrangler.jsonc`, so after
-a run that file holds the deployment's database id, mail domain and public URL. That is convenient
+a run that file holds the deployment's database id, mail domain, public URL and, in `per_inbox`
+mode, its zone id. That is convenient
 for a private deployment and wrong for a published fork: keep placeholders in git, and either keep
 the local edits out of a commit or move them to a `wrangler.<name>.jsonc` used with
 `wrangler --config`. The test suite does not read those values — `vitest.config.ts` pins its own —
 so a placeholder in git costs nothing.
+
+## Per-inbox routing
+
+`catch_all` is the default and needs nothing beyond the setup. Moving a deployment to `per_inbox`
+takes one API token and one run.
+
+1. Create a zone-scoped API token at https://dash.cloudflare.com/profile/api-tokens with **Zone —
+   Email Routing Rules — Edit**, scoped to the one zone that carries the mail domain. The OAuth
+   token from `pnpm run login` cannot be handed to the Worker, so this token is the only way the
+   Worker can write rules. Keep it to that one permission: it is stored as a Worker secret and used
+   for nothing else.
+2. Export it as `CLOUDFLARE_API_TOKEN`, or put it in `.env` at the repo root, and run:
+
+```
+pnpm run setup --domain agents.example.com --routing per_inbox --accept-changes
+```
+
+   The run writes `ROUTING_MODE`, `CLOUDFLARE_ZONE_ID` and `WORKER_NAME`, deploys, puts the token
+   into the `ROUTING_API_TOKEN` secret, creates one rule per existing inbox, and only then disables
+   the catch-all. Without `--accept-changes` it describes the switch and asks; without a TTY and
+   without the flag it stops before changing anything.
+3. To set the secret by hand instead: `pnpm wrangler secret put ROUTING_API_TOKEN`.
+
+Every later `createInbox` writes its own rule and every `deleteInbox` removes it. Re-running the
+setup reconciles drift in both directions, which is also how an inbox created while the token was
+missing gets its rule.
+
+Going back is `pnpm run setup --domain agents.example.com --routing catch_all`: the catch-all is
+pointed at the Worker again and the per-inbox rules are left in place, so a later switch forward
+has nothing to rebuild.
+
+Two things to know before switching. Cloudflare caps Email Routing rules per zone, which bounds
+the total number of inboxes across every account on the deployment; past the cap `createInbox`
+answers 409 `conflict` with `inbox limit reached`. And whether a `literal` rule delivers
+subaddressed mail (`desk-agent+invoices@` to the `desk-agent@` rule) is unverified — until it is,
+keep a deployment that relies on subaddressing in `catch_all` mode.
 
 ## DMARC reports
 
@@ -410,6 +469,10 @@ Edit `vars` in `wrangler.jsonc`:
 - `QUOTA_MESSAGES_RECEIVED_PER_MONTH` — per-account cap on messages received in a UTC month, as a
   string. `""` or `0` is unlimited.
 - `QUOTA_STORAGE_BYTES` — per-account cap on stored bytes, as a string. `""` or `0` is unlimited.
+- `ROUTING_MODE` — `catch_all` or `per_inbox`. Leave it `catch_all` unless you are following
+  **Per-inbox routing** above.
+- `CLOUDFLARE_ZONE_ID` and `WORKER_NAME` — only read in `per_inbox` mode; the zone the rules are
+  written to and the script name their worker action targets.
 
 Leave `MAIL_DOMAINS` until step 9, once the domain can actually receive and send.
 
@@ -417,6 +480,12 @@ Leave `MAIL_DOMAINS` until step 9, once the domain can actually receive and send
 
 ```
 pnpm wrangler secret put OPERATOR_TOKEN
+```
+
+`ROUTING_API_TOKEN` is a secret too, needed only in `per_inbox` mode:
+
+```
+pnpm wrangler secret put ROUTING_API_TOKEN
 ```
 
 `ADMIN_SECRET` is the other secret, needed only by a deployment that wants company mode:
@@ -454,6 +523,10 @@ does not affect subdomain delivery.
 Then under **Routing rules**, edit the **Catch-all address**: set the action to **Send to a Worker**
 and select `intray`. Enable the catch-all rule. The catch-all is zone-level and covers the
 subdomain.
+
+For `per_inbox` mode instead, leave the catch-all disabled and add one **Custom address** rule per
+inbox, matching the full address and sending to the `intray` Worker. Doing that by hand does not
+scale past the first few inboxes; the setup exists for it.
 
 ### 8. Enable outbound: Email Sending
 

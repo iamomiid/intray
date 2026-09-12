@@ -1,6 +1,6 @@
 import type { DeletedInboxKeys, InboxRow, ListOptions } from "./rows";
 
-const COLUMNS = "inbox_id, account_id, username, domain, display_name, created_at";
+const COLUMNS = "inbox_id, account_id, username, domain, display_name, routing_rule_id, created_at";
 
 export interface ListInboxOptions extends ListOptions {
   inboxIds?: string[] | null;
@@ -12,14 +12,16 @@ export interface InsertInboxInput {
   username: string;
   domain: string;
   displayName: string | null;
+  routingRuleId?: string | null;
   createdAt: number;
 }
 
 export async function insertInbox(db: D1Database, input: InsertInboxInput): Promise<InboxRow> {
   await db
     .prepare(
-      `INSERT INTO inboxes (inbox_id, account_id, username, domain, display_name, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO inboxes
+         (inbox_id, account_id, username, domain, display_name, routing_rule_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       input.inboxId,
@@ -27,6 +29,7 @@ export async function insertInbox(db: D1Database, input: InsertInboxInput): Prom
       input.username,
       input.domain,
       input.displayName,
+      input.routingRuleId ?? null,
       input.createdAt,
     )
     .run();
@@ -36,8 +39,20 @@ export async function insertInbox(db: D1Database, input: InsertInboxInput): Prom
     username: input.username,
     domain: input.domain,
     display_name: input.displayName,
+    routing_rule_id: input.routingRuleId ?? null,
     created_at: input.createdAt,
   };
+}
+
+export async function setInboxRoutingRule(
+  db: D1Database,
+  inboxId: string,
+  routingRuleId: string | null,
+): Promise<void> {
+  await db
+    .prepare(`UPDATE inboxes SET routing_rule_id = ? WHERE inbox_id = ?`)
+    .bind(routingRuleId, inboxId)
+    .run();
 }
 
 export function getInbox(db: D1Database, inboxId: string): Promise<InboxRow | null> {

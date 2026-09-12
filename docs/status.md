@@ -15,6 +15,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | operator token | done | `src/core/operator.ts`; `OPERATOR_TOKEN` resolves to `acc_operator`, checked before the key-hash lookup |
 | inboxes | done | create, get, list, delete with R2 cleanup, plus `requireInbox` |
 | inbound | done | `src/email/{inbound,threading,parse}.ts`; `email()` stores to D1 and R2 |
+| routing | done | `src/core/routing.ts`, `src/lib/cloudflare.ts`, `migrations/0008_routing.sql`; `ROUTING_MODE` is `catch_all` by default, `per_inbox` gives every inbox its own Email Routing rule created before the row and removed before the row, the setup's Routing steps write the vars, the `ROUTING_API_TOKEN` secret and reconcile the zone's rules against the deployment's inboxes |
 | outbound | done | recipient normalization, send/reply/forward builders, limit checks, send-error mapping |
 | core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments`, `orgs`, `audit` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
@@ -34,6 +35,17 @@ What is built, and what a contributor needs to know before touching it. Design r
 
 ## Limitations
 
+- Subaddressed delivery under a `literal` rule is unverified: nobody has confirmed on a live zone
+  that a rule for `desk-agent@` also delivers `desk-agent+invoices@`. Until someone does,
+  subaddressing works only in `catch_all` mode, where the catch-all matches every local part.
+  Verify it before moving a deployment that relies on tags.
+- Email Routing rules are capped per zone, so `per_inbox` mode bounds the total number of inboxes
+  across every account on the deployment, not just per account. Past the cap `createInbox` answers
+  409 `conflict` with `inbox limit reached`.
+- In `per_inbox` mode `createInbox` and `deleteInbox` each make a Cloudflare API call, so both are
+  slower than a D1 write and both fail with 503 `routing_unavailable` while the API is unreachable.
+  Nothing retries; the setup's reconcile is what repairs a create that got the rule but not the row
+  or the other way round.
 - One org per deployment. `POST /v1/orgs` answers `conflict` once an org exists, and `signupInvite`
   looks the invite up in that single org, so a deployment cannot host two companies.
 - Removing a member drops the membership and revokes their keys but keeps their inboxes, threads
@@ -113,7 +125,8 @@ What is built, and what a contributor needs to know before touching it. Design r
   `test/support.ts` exports `resetDatabase(db)`; call it in `beforeEach` of any suite that writes.
   It does not clean up R2 objects.
 - `vitest.config.ts` pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`, the
-  three `QUOTA_*` vars, `OPERATOR_TOKEN` and `ADMIN_SECRET` in the miniflare bindings, so changing the deployment vars in `wrangler.jsonc`
+  three `QUOTA_*` vars, `ROUTING_MODE`, `CLOUDFLARE_ZONE_ID`, `WORKER_NAME`, `OPERATOR_TOKEN` and
+  `ADMIN_SECRET` in the miniflare bindings, so changing the deployment vars in `wrangler.jsonc`
   cannot move the suite. HTTP and MCP suites must use the operator-token constant from
   `test/support.ts`, because `SELF.fetch` takes no per-request env override.
 - The vitest pool exports no `fetchMock`, so the suites that assert on an outbound HTTP request
@@ -156,6 +169,14 @@ What is built, and what a contributor needs to know before touching it. Design r
   attachment. A PDF costs pdf.js a parse of the whole file plus a copy of its bytes, so a mail
   carrying several large PDFs adds CPU and memory to an ingest that Email Routing is waiting on.
   The 10 MiB input cap is what bounds it; move extraction off the ingest path before raising that.
+- Cloudflare does not document a stable error code for the per-zone Email Routing rule cap, so
+  `src/lib/cloudflare.ts` recognizes it by matching the error message against
+  `/\b(limit|maximum|max number|too many|exceed)/i`. A message that changes wording turns the cap
+  back into a plain 503 `routing_unavailable`; re-check the regex against a real cap response.
+- The setup's Routing rules step reads the deployment's inboxes with `wrangler d1 execute --remote`
+  and writes the rule ids back the same way, because the setup is a Node script with no D1 binding.
+  Values are quoted by doubling `'`; an address cannot contain one today, and the escaping is there
+  so that stays true if the username rules loosen.
 - Subdomain mode leaves the zone apex without Cloudflare MX records, so the Cloudflare dashboard
   reports the zone's Email Routing status as `misconfigured`. That is cosmetic and expected;
   delivery to the subdomain works, the setup does not read that field, and it must not start

@@ -13,6 +13,7 @@ import type {
   ThreadRow,
   WebhookRow,
 } from "../db/rows";
+import type { InboxRouting } from "./routing";
 export interface AddressObject {
   address: string;
   name: string | null;
@@ -81,6 +82,7 @@ export interface InboxObject {
   username: string;
   domain: string;
   display_name: string | null;
+  routing: InboxRouting;
   created_at: number;
 }
 
@@ -300,6 +302,7 @@ export function toInbox(row: InboxRow): InboxObject {
     username: row.username,
     domain: row.domain,
     display_name: row.display_name,
+    routing: row.routing_rule_id === null ? "catch_all" : "rule",
     created_at: row.created_at,
   };
 }

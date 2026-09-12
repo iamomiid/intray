@@ -32,6 +32,9 @@ const ORDER = [
   "DMARC reports",
   "Destination address",
   "Mail domain",
+  "Routing mode",
+  "Routing token",
+  "Routing rules",
 ];
 
 const context = { root: "/repo", configPath: "/repo/wrangler.jsonc" } as unknown as SetupContext;
@@ -49,8 +52,10 @@ describe("steps", () => {
     expect(steps.map((step) => step.name)).toEqual(ORDER);
   });
 
-  it("writes the mail domain after the destination address", () => {
-    expect(steps.map((step) => step.name).indexOf("Mail domain")).toBe(steps.length - 1);
+  it("writes the mail domain after the destination address and before the routing steps", () => {
+    const names = steps.map((step) => step.name);
+    expect(names.indexOf("Mail domain")).toBeGreaterThan(names.indexOf("Destination address"));
+    expect(names.indexOf("Routing mode")).toBe(names.indexOf("Mail domain") + 1);
   });
 
   it("names every step once", () => {

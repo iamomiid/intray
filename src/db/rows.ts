@@ -35,6 +35,7 @@ export interface InboxRow {
   username: string;
   domain: string;
   display_name: string | null;
+  routing_rule_id: string | null;
   created_at: number;
 }
 

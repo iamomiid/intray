@@ -5,36 +5,9 @@ Ordered. Each item is additive; v1 data model already reserves the columns the e
 ## 1. Custom domains per account
 
 Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and
-route inbound per item 2, one rule per inbox on the account's domain. Adds
-`domains(domain, account_id, verified_at)` and drops the reliance on a single operator-wide
-`MAIL_DOMAINS`.
-
-## 2. Per-inbox routing rules
-
-The setup points the zone's Email Routing catch-all at the Worker, and the Worker rejects unknown
-recipients itself with `550 no such inbox`. The MX therefore accepts mail for every address on the
-domain before anything rejects it, which address harvesters and reputation systems notice, and the
-catch-all claims the whole domain, so nothing else can hold an address on it. Replace it with one
-Email Routing rule per inbox, so the domain only ever accepts mail for addresses that exist and the
-operator's other addresses on the same domain keep working.
-
-`createInbox` adds a rule with a `literal` matcher on the full address and a `worker` action, and
-stores its id in a new `inboxes.routing_rule_id` column; `deleteInbox` removes the rule before the
-row. A failed rule creation fails the create, so an inbox never exists without its route, and a
-re-run of the setup reconciles drift in both directions: rules for inboxes that have none, and
-rules pointing at the Worker for addresses with no inbox. The Worker needs the zone id and a
-zone-scoped API token with `email_routing:write` as a secret; item 1 uses the same client. Email
-Routing caps rules per zone, which bounds the total inbox count across accounts; `createInbox`
-surfaces that as `inbox limit reached` rather than as a routing error.
-
-Routing mode is a `ROUTING_MODE` var, `per_inbox` or `catch_all`, written by the setup from a
-`--routing` flag. Switching an existing deployment to `per_inbox` creates the rules first and then
-disables the catch-all, which changes how the domain's mail flows and so is asked about. The
-Worker's own `550 no such inbox` stays as the backstop for `catch_all` mode and for a stale rule.
-
-Before the catch-all can go, verify that a `literal` rule delivers subaddressed mail
-(`desk-agent+invoices@`) to the `desk-agent@` rule. If it does not, subaddressing is limited to
-`catch_all` mode until it does.
+route inbound through the per-inbox Email Routing rules, one rule per inbox on the account's
+domain. Adds `domains(domain, account_id, verified_at)` and drops the reliance on a single
+operator-wide `MAIL_DOMAINS`.
 
 ## 3. Pluggable mail providers
 
