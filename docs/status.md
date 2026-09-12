@@ -19,7 +19,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
 | mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 18 with one |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
-| message search | partial | `searchMessages` and the `from`/`to`/`subject` filters are `LIKE` scans; fine at v1 volumes, replaced by FTS5 in roadmap item 5 |
+| message search | partial | `searchMessages` and the `from`/`to`/`subject` filters are `LIKE` scans; fine at v1 volumes, replaced by FTS5 in roadmap item 6 |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time |
 
 ## Limitations
@@ -32,8 +32,9 @@ What is built, and what a contributor needs to know before touching it. Design r
   parent's inline attachments as ordinary attachments. Both are simplifications.
 - `signup` over MCP has no client IP, so it passes an empty `SignupContext` and skips the per-IP
   rate limiter. Only the per-account hourly OTP cap applies on that path.
-- The schema is a single migration, `0001_init.sql`, because nothing is published yet. Edit it in
-  place until the first release, then start adding numbered migrations.
+- `0001_init.sql` is the released baseline and is never edited. Every schema change is a new
+  numbered migration under `migrations/`, applied with `pnpm db:migrate:local` and
+  `pnpm db:migrate:remote`.
 
 ## Gotchas
 
