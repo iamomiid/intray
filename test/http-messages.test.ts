@@ -7,6 +7,7 @@ import { now } from "../src/lib/time";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
 import replyEml from "./fixtures/reply.eml?raw";
+import spamEml from "./fixtures/spam.eml?raw";
 import { resetDatabase } from "./support";
 
 const EMAIL = "human@agents.test";
@@ -31,6 +32,8 @@ interface MessageResponse {
   direction: string;
   subject: string | null;
   labels: string[];
+  spam_score: number;
+  spam_reasons: string[];
   has_attachments: boolean;
   attachments: AttachmentResponse[];
   to: { address: string; name: string | null }[];
@@ -533,4 +536,44 @@ it("replies to an ingested message and stays in its thread", async () => {
   expect(message.thread_id).toBe(ingested.threadId);
   expect(message.subject).toBe("Re: Quarterly status");
   expect(message.labels).toEqual(["sent", "support"]);
+});
+
+it("labels scored mail spam and filters a list by max_spam_score", async () => {
+  const account = await signupOver(EMAIL);
+  const auth = { authorization: `Bearer ${account.api_key}` };
+  const base = `/v1/inboxes/${encodeURIComponent(account.inbox_id)}`;
+  await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: account.inbox_id,
+    raw: bytes(plainEml),
+  });
+  await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: account.inbox_id,
+    raw: bytes(spamEml),
+  });
+
+  const all = await SELF.fetch(url(`${base}/messages`), { headers: auth });
+  expect((await all.json<MessagePage>()).items).toHaveLength(2);
+
+  const clean = await SELF.fetch(url(`${base}/messages?max_spam_score=49`), { headers: auth });
+  const cleanPage = await clean.json<MessagePage>();
+  expect(cleanPage.items).toHaveLength(1);
+  expect((cleanPage.items[0] as MessageResponse).spam_score).toBe(0);
+  expect((cleanPage.items[0] as MessageResponse).labels).toEqual(["received", "unread"]);
+
+  const labelled = await SELF.fetch(url(`${base}/messages?labels=spam`), { headers: auth });
+  const labelledPage = await labelled.json<MessagePage>();
+  expect(labelledPage.items).toHaveLength(1);
+  const flagged = labelledPage.items[0] as MessageResponse;
+  expect(flagged.spam_score).toBe(75);
+  expect(flagged.spam_reasons).toEqual(["spf_fail", "dkim_fail", "dmarc_fail"]);
+  expect(flagged.labels).toEqual(["received", "spam"]);
+
+  const unread = await SELF.fetch(url(`${base}/messages?labels=unread`), { headers: auth });
+  expect((await unread.json<MessagePage>()).items).toHaveLength(1);
+
+  const invalid = await SELF.fetch(url(`${base}/messages?max_spam_score=high`), { headers: auth });
+  expect(invalid.status).toBe(400);
+  expect((await invalid.json<ErrorResponse>()).error.code).toBe("bad_request");
 });

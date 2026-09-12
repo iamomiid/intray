@@ -241,6 +241,8 @@ const PARAMETER_DESCRIPTIONS: Record<string, string> = {
   subject: "substring match on the subject",
   since: "lower bound on created_at, Unix milliseconds",
   before: "upper bound on created_at, Unix milliseconds",
+  max_spam_score:
+    "upper bound on spam_score, 0 to 100; 49 hides everything labelled spam at the default threshold",
   timeout: "seconds to block, default 30, capped at 55",
   status: "filter drafts by status",
   response_type: "must be code",
@@ -613,6 +615,8 @@ const ROUTES: readonly RouteSpec[] = [
     operationId: "listMessages",
     tag: "Messages",
     summary: "List an inbox's messages by created_at descending",
+    description:
+      "Every message carries spam_score and spam_reasons; max_spam_score bounds the score and the spam label is an ordinary labels entry.",
     auth: true,
     params: inboxParams,
     query: listMessagesQuery,

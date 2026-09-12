@@ -8,6 +8,7 @@ import { now } from "../src/lib/time";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
 import replyEml from "./fixtures/reply.eml?raw";
+import spamEml from "./fixtures/spam.eml?raw";
 import { ADMIN_SECRET, OPERATOR_TOKEN, resetDatabase } from "./support";
 
 interface JsonRpcResponse {
@@ -692,4 +693,35 @@ it("mints a scoped key through create_api_key", async () => {
   const refused = await callTool("create_inbox", { username: "another" }, key.key);
   expect(refused.isError).toBe(true);
   expect(payload<{ error: { code: string } }>(refused).error.code).toBe("forbidden");
+});
+
+it("filters list_messages by max_spam_score", async () => {
+  const created = await onboard();
+  await callTool("create_inbox", { username: "agent" }, created.api_key);
+  await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: INBOX_ID,
+    raw: bytes(plainEml),
+  });
+  await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: INBOX_ID,
+    raw: bytes(spamEml),
+  });
+
+  const all = payload<{ items: { spam_score: number; spam_reasons: string[] }[] }>(
+    await callTool("list_messages", { inbox_id: INBOX_ID }, created.api_key),
+  );
+  expect(all.items.map((item) => item.spam_score).sort()).toEqual([0, 75]);
+
+  const clean = payload<{ items: { spam_score: number; labels: string[] }[] }>(
+    await callTool("list_messages", { inbox_id: INBOX_ID, max_spam_score: 49 }, created.api_key),
+  );
+  expect(clean.items).toHaveLength(1);
+  expect(clean.items[0]?.labels).toEqual(["received", "unread"]);
+
+  const flagged = payload<{ items: { spam_reasons: string[] }[] }>(
+    await callTool("list_messages", { inbox_id: INBOX_ID, labels: "spam" }, created.api_key),
+  );
+  expect(flagged.items[0]?.spam_reasons).toEqual(["spf_fail", "dkim_fail", "dmarc_fail"]);
 });

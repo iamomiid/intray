@@ -36,10 +36,6 @@ same `550` and `552` reasons in the response body so the caller can bounce.
 `cloudflare` and instead checks that the chosen provider's secrets are set. Drafts drain
 through the transport. The test suites' `EMAIL` fake becomes a `MailTransport` fake.
 
-## 4. Spam scoring and virus scanning on inbound
-
-Score inbound mail and label or reject accordingly, so an agent is not handed obvious junk.
-
 ## 5. Deliverability visibility as MCP tools
 
 Expose what an agent currently cannot see about its own sending: the DMARC aggregate reports for

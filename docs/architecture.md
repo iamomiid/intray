@@ -36,7 +36,8 @@ Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate
 `INBOX_WAITER` (the `InboxWaiter` Durable Object namespace, optional), and the
 vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`,
 `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH`, `QUOTA_STORAGE_BYTES`,
-`ROUTING_MODE`, `CLOUDFLARE_ZONE_ID` and `WORKER_NAME` plus the `OPERATOR_TOKEN`, `ADMIN_SECRET`
+`SPAM_LABEL_THRESHOLD`, `SPAM_REJECT_THRESHOLD`, `ROUTING_MODE`, `CLOUDFLARE_ZONE_ID` and
+`WORKER_NAME` plus the `OPERATOR_TOKEN`, `ADMIN_SECRET`
 and `ROUTING_API_TOKEN` secrets. `src/env.ts` turns the vars into a `Config`; the three
 secrets are read from `Env` directly, since none has a parsed form.
 
@@ -48,18 +49,23 @@ and calls `ingestInbound(env, {envelopeFrom, envelopeTo, raw})`, which runs:
 1. reject when `raw.byteLength` exceeds `INBOUND_MAX_BYTES` (`552 message too large`);
 2. `splitTag(envelopeTo)` then `getInbox` on the base address, rejecting an unknown recipient
    (`550 no such inbox`); the `+tag` is stripped for the lookup, so tagged addresses land in the
-   base inbox, and it is kept for step 7;
+   base inbox, and it is kept for step 8;
 3. `withinInboundQuota` on the owning account, rejecting a message past the received or storage
    quota (`552 quota exceeded`) before anything is written;
-4. `parseMime(raw)` through `postal-mime`, yielding a `ParsedEmail` with bare RFC identifiers and a
-   `preview` derived from the text body, or from tag-stripped html when there is none;
-5. `BUCKET.put("raw/{message_id}.eml")` and `BUCKET.put("att/{message_id}/{n}")` per attachment;
-6. `resolveThreadId` matching `[inReplyTo, ...references]` against `messages.rfc_message_id` in the
+4. `parseMime(raw)` through `postal-mime`, yielding a `ParsedEmail` with bare RFC identifiers, the
+   raw header list, and a `preview` derived from the text body, or from tag-stripped html when
+   there is none;
+5. `scoreSpam(parsed, envelopeFrom)`, rejecting an executable attachment (`550 attachment type not
+   accepted`) and a score at or above `SPAM_REJECT_THRESHOLD` (`550 rejected as spam`), still
+   before anything is written;
+6. `BUCKET.put("raw/{message_id}.eml")` and `BUCKET.put("att/{message_id}/{n}")` per attachment;
+7. `resolveThreadId` matching `[inReplyTo, ...references]` against `messages.rfc_message_id` in the
    same inbox, else a new `thr_` row whose subject and participants come from this message;
-7. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` plus `bounce` when
-   the message is a delivery status notification and the recipient's tag when it can be a label,
-   `size`, `has_attachments` and `raw_key`, then one `insertAttachment` per stored object;
-8. `touchThread`, which bumps `last_message_at`, rewrites `participants_json`, fills a missing
+8. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` — or
+   `["received","spam"]` from step 5 — plus `bounce` when the message is a delivery status
+   notification and the recipient's tag when it can be a label, `size`, `has_attachments`,
+   `raw_key`, `spam_score` and `spam_reasons_json`, then one `insertAttachment` per stored object;
+9. `touchThread`, which bumps `last_message_at`, rewrites `participants_json`, fills a missing
    subject, and increments `message_count`, then one suppression row per bounced address.
 
 Rejections are thrown as `InboundRejected` and turned into `message.setReject(reason)` by
@@ -67,6 +73,71 @@ Rejections are thrown as `InboundRejected` and turned into `message.setReject(re
 
 Threading has no subject-based fallback: a reply from a client that drops both `In-Reply-To` and
 `References` starts a new thread.
+
+### Spam
+
+`src/email/spam.ts` scores every inbound message before the first write.
+`scoreSpam(parsed, envelopeFrom)` is pure: it reads the parsed message, its raw headers and its
+attachment bytes and returns `{score, reasons}`. Each reason is a short stable token, the score is
+the sum of the reasons' weights capped at 100, and the whole weight table is the one `SPAM_WEIGHTS`
+const at the top of the module so a reader can audit it in one place. Nothing here calls out of the
+Worker and nothing is remembered between messages, so the same mail always scores the same.
+
+| Reason | Weight | Signal |
+| --- | --- | --- |
+| `spf_fail` | 25 | `Authentication-Results` says `spf=fail` |
+| `spf_softfail` | 10 | `Authentication-Results` says `spf=softfail` |
+| `dkim_fail` | 20 | `Authentication-Results` says `dkim=fail` |
+| `dkim_none` | 8 | `Authentication-Results` says `dkim=none` |
+| `dmarc_fail` | 30 | `Authentication-Results` says `dmarc=fail` |
+| `missing_message_id` | 10 | no `Message-ID` |
+| `missing_date` | 5 | no parsable `Date` |
+| `from_display_address` | 20 | the `From` display name holds an address other than the `From` address |
+| `reply_to_other_domain` | 10 | `Reply-To` is on a different registrable domain than `From` |
+| `from_not_envelope_domain` | 12 | the `From` domain is not the envelope sender's |
+| `subject_all_caps` | 8 | the subject has 12 letters or more and no lowercase one |
+| `subject_punctuation` | 8 | more than three `!` and `$` between them |
+| `subject_fake_reply` | 10 | `RE:`, `FW:` or `FWD:` with no `In-Reply-To` and no `References` |
+| `html_only` | 6 | an html body with no text alternative |
+| `html_thin_with_links` | 12 | html whose visible text is under 80 characters and that carries a link |
+| `many_link_domains` | 8 | more than five distinct registrable link domains |
+| `link_text_mismatch` | 20 | link text shows one domain while the `href` points at another |
+| `mostly_urls` | 10 | over half of a body of 40 characters or more is URL |
+| `list_unsubscribe` | 3 | `List-Unsubscribe` is present |
+| `precedence_bulk` | 5 | `Precedence` is `bulk` or `junk` |
+| `attachment_executable` | 60 | an attachment's extension is executable |
+| `attachment_double_extension` | 40 | a document extension followed by another, as in `invoice.pdf.exe` |
+| `attachment_script` | 30 | a script extension, loose or inside a zip |
+| `attachment_macro_office` | 25 | an Office content type with a `docm`, `xlsm` or `pptm` extension |
+| `archive_executable` | 60 | a zip holding an executable extension |
+| `archive_unknown` | 15 | a zip whose entries cannot be listed, or one over 4 MiB |
+
+`Authentication-Results` is what Cloudflare Email Routing stamps on delivery. The header name is
+matched case-insensitively, every instance is read, and the first result found for a method wins; a
+message with no such header contributes no authentication signal at all rather than a penalty,
+because a deployment behind another MTA may not get one.
+
+**Policy.** `config(env).spam` holds `SPAM_LABEL_THRESHOLD`, default 50, and
+`SPAM_REJECT_THRESHOLD`, default 90 and never rejecting at `0`. At or above the reject threshold
+the message is refused with `550 rejected as spam` and nothing is written, so the sending MTA is
+told rather than the mail disappearing. At or above the label threshold it is stored with labels
+`["received","spam"]` — `spam` instead of `unread`, so an agent filtering on `unread` does not see
+it and one filtering on `spam` does. Below both it is stored normally. The score and the reasons
+land on the row either way, including on a message nobody labelled, so an operator can tune the
+thresholds against what actually arrived.
+
+**There is no antivirus engine.** A Worker cannot run one, and nothing here inspects file contents
+for known malware. What it does instead is refuse the shapes that carry it, and the extensions are
+two lists. An attachment whose extension is `exe`, `com`, `scr`, `pif`, `bat`, `cmd`, `msi`, `hta`,
+`lnk`, `vbs`, `ps1` or `jar`, and a zip holding one, are rejected with `550 attachment type not
+accepted` whatever the score and whatever the thresholds, because that decision should not move
+when an operator tunes spam; the double-extension rule sits on this list too. A script extension —
+`js`, `jse`, `wsf`, `sh`, `py`, `rb` or `pl` — is scored and never refused, loose or inside a zip,
+because this inbox is read by agents and developers and source code travels by mail. Zip entries
+are listed through `fflate`'s `unzipSync` with a filter that returns `false` for every entry, so
+the central directory is read and nothing is decompressed; a zip that cannot be read, or one over
+4 MiB, scores as unknown rather than being trusted. Macro-enabled Office documents are scored, not
+refused, because they are often legitimate.
 
 ### Routing
 
@@ -139,7 +210,7 @@ other; only the suppression list is new state.
 
 ### Attachment text
 
-Step 8 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
+Step 9 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
 `extractText(contentType, filename, bytes)` from `src/email/extract.ts` over the bytes already in
 memory and writes the result onto the row with `updateAttachmentText`. PDF goes through `unpdf`,
 pdf.js packaged for serverless runtimes; docx is unzipped with `fflate` and the text runs are pulled
@@ -464,7 +535,7 @@ numbered migration.
 | `otps` | `account_id` | `code_hash`, `expires_at`, `attempts`; codes are never stored in the clear |
 | `inboxes` | `inbox_id` (the address) | `username` and `domain` denormalized, `display_name`, `routing_rule_id` null in `catch_all` mode |
 | `threads` | `thread_id` (`thr_`) | `subject`, `last_message_at`, `message_count`, `participants_json` |
-| `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key` |
+| `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key`, `spam_score`, `spam_reasons_json` |
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |
 | `drafts` | `draft_id` (`drf_`) | `kind`, `parent_message_id`, `body_json` (attachment metadata only, bytes in R2), `send_at`, `status`, `sent_message_id`, `error`; indexed on `(inbox_id, updated_at)` and `(status, send_at)` |
 | `usage` | `(account_id, period)` | `period` is a `YYYY-MM` UTC month or the literal `all`; `messages_sent`, `messages_received`, `storage_bytes` |

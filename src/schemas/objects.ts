@@ -145,6 +145,8 @@ export const messageObject = z.strictObject({
   labels: z.array(z.string()),
   size: z.number(),
   has_attachments: z.boolean(),
+  spam_score: z.number(),
+  spam_reasons: z.array(z.string()),
   attachments: z.array(attachmentObject),
   created_at: z.number(),
 });

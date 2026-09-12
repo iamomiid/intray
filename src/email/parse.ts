@@ -67,7 +67,7 @@ function toBytes(content: Attachment["content"], encoding: Attachment["encoding"
   return new Uint8Array(content);
 }
 
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return html
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<[^>]*>/g, " ")
@@ -106,7 +106,10 @@ export async function parseMime(raw: Uint8Array): Promise<ParsedEmail> {
   }));
 
   return {
-    headers: email.headers.map((header) => ({ key: header.key, value: header.value })),
+    headers: email.headers.map((header) => ({
+      key: header.key.toLowerCase(),
+      value: header.value,
+    })),
     from,
     to: flattenAddresses(email.to),
     cc: flattenAddresses(email.cc),

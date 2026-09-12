@@ -2,7 +2,8 @@ import type { DeletedObjectKeys, ListOptions, MessageRow } from "./rows";
 
 const COLUMNS = `message_id, inbox_id, thread_id, direction, rfc_message_id, in_reply_to,
   references_json, from_addr, from_name, to_json, cc_json, bcc_json, reply_to, subject, text, html,
-  preview, labels_json, size, has_attachments, raw_key, created_at`;
+  preview, labels_json, size, has_attachments, raw_key, spam_score, spam_reasons_json,
+  created_at`;
 
 const QUALIFIED_COLUMNS = COLUMNS.split(",")
   .map((column) => `messages.${column.trim()}`)
@@ -37,6 +38,8 @@ export interface InsertMessageInput {
   size: number;
   hasAttachments: number;
   rawKey: string | null;
+  spamScore: number;
+  spamReasonsJson: string;
   createdAt: number;
 }
 
@@ -47,6 +50,7 @@ export interface MessageFilters {
   subject?: string;
   since?: number;
   before?: number;
+  maxSpamScore?: number;
 }
 
 export interface MessageLabelUpdate {
@@ -77,8 +81,9 @@ export async function insertMessage(
     .prepare(
       `INSERT INTO messages (message_id, inbox_id, thread_id, direction, rfc_message_id, in_reply_to,
         references_json, from_addr, from_name, to_json, cc_json, bcc_json, reply_to, subject, text,
-        html, preview, labels_json, size, has_attachments, raw_key, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        html, preview, labels_json, size, has_attachments, raw_key, spam_score,
+        spam_reasons_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       input.messageId,
@@ -102,6 +107,8 @@ export async function insertMessage(
       input.size,
       input.hasAttachments,
       input.rawKey,
+      input.spamScore,
+      input.spamReasonsJson,
       input.createdAt,
     )
     .run();
@@ -127,6 +134,8 @@ export async function insertMessage(
     size: input.size,
     has_attachments: input.hasAttachments,
     raw_key: input.rawKey,
+    spam_score: input.spamScore,
+    spam_reasons_json: input.spamReasonsJson,
     created_at: input.createdAt,
   };
 }
@@ -192,6 +201,10 @@ export async function listMessages(
   if (filters.before !== undefined) {
     conditions.push("created_at <= ?");
     binds.push(filters.before);
+  }
+  if (filters.maxSpamScore !== undefined) {
+    conditions.push("spam_score <= ?");
+    binds.push(filters.maxSpamScore);
   }
 
   const cursor = options.cursor ?? null;

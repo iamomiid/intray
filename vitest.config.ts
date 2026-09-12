@@ -19,6 +19,8 @@ export default defineConfig({
           QUOTA_MESSAGES_SENT_PER_MONTH: "100",
           QUOTA_MESSAGES_RECEIVED_PER_MONTH: "100",
           QUOTA_STORAGE_BYTES: "1073741824",
+          SPAM_LABEL_THRESHOLD: "50",
+          SPAM_REJECT_THRESHOLD: "90",
           ROUTING_MODE: "catch_all",
           CLOUDFLARE_ZONE_ID: "",
           WORKER_NAME: "intray",

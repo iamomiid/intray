@@ -199,6 +199,8 @@ export interface MessageObject {
   labels: string[];
   size: number;
   has_attachments: boolean;
+  spam_score: number;
+  spam_reasons: string[];
   attachments: AttachmentObject[];
   created_at: number;
 }
@@ -482,6 +484,8 @@ export function toMessage(row: MessageRow, attachments: AttachmentRow[]): Messag
     labels: parseStringArray(row.labels_json),
     size: row.size,
     has_attachments: row.has_attachments !== 0,
+    spam_score: row.spam_score,
+    spam_reasons: parseStringArray(row.spam_reasons_json),
     attachments: attachments.map(toAttachment),
     created_at: row.created_at,
   };

@@ -36,6 +36,7 @@ interface SeedInput {
   text?: string;
   labels?: string[];
   threadId?: string;
+  spamScore?: number;
 }
 
 function bytes(text: string): Uint8Array {
@@ -93,6 +94,8 @@ async function seed(input: SeedInput): Promise<string> {
     size: 10,
     hasAttachments: 0,
     rawKey: null,
+    spamScore: input.spamScore ?? 0,
+    spamReasonsJson: "[]",
     createdAt: input.createdAt,
   });
   await touchThread(env.DB, threadId, {
@@ -783,4 +786,23 @@ it("returns no items when the wait times out", async () => {
   expect(waited.items).toEqual([]);
   expect(waited.next_page_token).toBeNull();
   expect(Date.now() - started).toBeGreaterThanOrEqual(1000);
+});
+
+it("filters a list by max_spam_score", async () => {
+  const principal = await seedInbox();
+  await seed({ id: "clean", createdAt: 3000 });
+  await seed({ id: "junk", createdAt: 2000, spamScore: 75 });
+
+  const all = await listMessages(env, principal, INBOX_ID, {});
+  expect(all.items).toHaveLength(2);
+
+  const bounded = await listMessages(env, principal, INBOX_ID, { max_spam_score: 49 });
+  expect(bounded.items.map((item) => item.message_id)).toEqual(["msg_clean"]);
+  expect(bounded.items[0]?.spam_score).toBe(0);
+
+  await rejectsWith(
+    listMessages(env, principal, INBOX_ID, { max_spam_score: "high" }),
+    400,
+    "bad_request",
+  );
 });

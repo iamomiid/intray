@@ -80,6 +80,7 @@ export interface ListMessagesQuery {
   subject?: string;
   since?: number | string;
   before?: number | string;
+  max_spam_score?: number | string;
   limit?: number | string;
   page_token?: string;
 }
@@ -143,7 +144,7 @@ export interface DeletedMessage {
   deleted: true;
 }
 
-function optionalTimestamp(value: number | string | undefined, field: string): number | undefined {
+function optionalNumber(value: number | string | undefined, field: string): number | undefined {
   if (value === undefined || value === null || value === "") {
     return undefined;
   }
@@ -261,8 +262,9 @@ export async function listMessages(
       from: query.from,
       to: query.to,
       subject: query.subject,
-      since: optionalTimestamp(query.since, "since"),
-      before: optionalTimestamp(query.before, "before"),
+      since: optionalNumber(query.since, "since"),
+      before: optionalNumber(query.before, "before"),
+      maxSpamScore: optionalNumber(query.max_spam_score, "max_spam_score"),
     },
     { limit, cursor },
   );
@@ -319,7 +321,7 @@ export async function waitForMessage(
   options: WaitOptions = {},
 ): Promise<Page<MessageObject>> {
   const inbox = await requireInbox(env, principal, inboxId);
-  const since = optionalTimestamp(query.since, "since") ?? now();
+  const since = optionalNumber(query.since, "since") ?? now();
   const timeout = clampTimeout(query.timeout);
   const pollMs = options.pollMs === undefined ? WAIT_POLL_MS : Math.max(1, options.pollMs);
   const deadline = now() + timeout * 1000;
@@ -558,6 +560,8 @@ async function persistOutbound(
     size: built.size,
     hasAttachments: built.attachments.length > 0 ? 1 : 0,
     rawKey: null,
+    spamScore: 0,
+    spamReasonsJson: "[]",
     createdAt,
   });
 

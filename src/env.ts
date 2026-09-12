@@ -15,6 +15,8 @@ export interface Env {
   QUOTA_MESSAGES_SENT_PER_MONTH?: string;
   QUOTA_MESSAGES_RECEIVED_PER_MONTH?: string;
   QUOTA_STORAGE_BYTES?: string;
+  SPAM_LABEL_THRESHOLD?: string;
+  SPAM_REJECT_THRESHOLD?: string;
   ROUTING_MODE?: string;
   CLOUDFLARE_ZONE_ID?: string;
   WORKER_NAME?: string;
@@ -27,6 +29,11 @@ export interface Quotas {
   messagesSentPerMonth: number | null;
   messagesReceivedPerMonth: number | null;
   storageBytes: number | null;
+}
+
+export interface SpamPolicy {
+  labelThreshold: number;
+  rejectThreshold: number;
 }
 
 export type RoutingMode = "catch_all" | "per_inbox";
@@ -43,10 +50,15 @@ export interface Config {
   publicUrl: string;
   allowedSignupEmails: string[];
   quotas: Quotas;
+  spam: SpamPolicy;
   routing: RoutingConfig;
 }
 
 export const DEFAULT_WORKER_NAME = "intray";
+
+export const DEFAULT_SPAM_LABEL_THRESHOLD = 50;
+
+export const DEFAULT_SPAM_REJECT_THRESHOLD = 90;
 
 function text(raw: unknown): string {
   return typeof raw === "string" ? raw.trim() : "";
@@ -58,6 +70,18 @@ function routing(env: Env): RoutingConfig {
     mode: text(env.ROUTING_MODE) === "per_inbox" ? "per_inbox" : "catch_all",
     zoneId: text(env.CLOUDFLARE_ZONE_ID),
     workerName: worker === "" ? DEFAULT_WORKER_NAME : worker,
+  };
+}
+
+function threshold(raw: unknown, fallback: number): number {
+  const parsed = Number.parseInt(text(raw), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function spam(env: Env): SpamPolicy {
+  return {
+    labelThreshold: threshold(env.SPAM_LABEL_THRESHOLD, DEFAULT_SPAM_LABEL_THRESHOLD),
+    rejectThreshold: threshold(env.SPAM_REJECT_THRESHOLD, DEFAULT_SPAM_REJECT_THRESHOLD),
   };
 }
 
@@ -91,6 +115,7 @@ export function config(env: Env): Config {
       messagesReceivedPerMonth: quota(env.QUOTA_MESSAGES_RECEIVED_PER_MONTH),
       storageBytes: quota(env.QUOTA_STORAGE_BYTES),
     },
+    spam: spam(env),
     routing: routing(env),
   };
 }

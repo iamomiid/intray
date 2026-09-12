@@ -7,7 +7,7 @@ import { insertAttachment } from "../db/attachments";
 import { getInbox } from "../db/inboxes";
 import { insertMessage } from "../db/messages";
 import { getThread, insertThread, touchThread } from "../db/threads";
-import type { Env } from "../env";
+import { config, type Env } from "../env";
 import { normalizeAddress, splitTag, tagLabel } from "../lib/address";
 import { newId } from "../lib/ids";
 import { INBOUND_MAX_BYTES } from "../lib/limits";
@@ -15,6 +15,7 @@ import { now } from "../lib/time";
 import { notifyInbox } from "../waiter";
 import { type BounceRecipient, detectBounce } from "./bounce";
 import { type ParsedEmail, type ParsedMailbox, parseMime } from "./parse";
+import { rejectsAttachment, type SpamAssessment, scoreSpam } from "./spam";
 import { resolveThreadId } from "./threading";
 
 export const REJECT_UNKNOWN_RECIPIENT = "550 no such inbox";
@@ -22,6 +23,10 @@ export const REJECT_UNKNOWN_RECIPIENT = "550 no such inbox";
 export const REJECT_TOO_LARGE = "552 message too large";
 
 export const REJECT_QUOTA_EXCEEDED = "552 quota exceeded";
+
+export const REJECT_SPAM = "550 rejected as spam";
+
+export const REJECT_ATTACHMENT_TYPE = "550 attachment type not accepted";
 
 export class InboundRejected extends Error {
   readonly reason: string;
@@ -49,13 +54,16 @@ const INBOUND_LABELS: readonly string[] = ["received", "unread"];
 
 export const BOUNCE_LABEL = "bounce";
 
-function inboundLabels(tag: string | null, bounced: boolean): string {
-  const base = bounced ? [...INBOUND_LABELS, BOUNCE_LABEL] : [...INBOUND_LABELS];
+const SPAM_LABELS: readonly string[] = ["received", "spam"];
+
+function inboundLabels(tag: string | null, spam: boolean, bounced: boolean): string {
+  const base = spam ? SPAM_LABELS : INBOUND_LABELS;
+  const withBounce = bounced ? [...base, BOUNCE_LABEL] : [...base];
   const label = tagLabel(tag);
-  if (label === null || base.includes(label)) {
-    return JSON.stringify(base);
+  if (label === null || withBounce.includes(label)) {
+    return JSON.stringify(withBounce);
   }
-  return JSON.stringify([...base, label]);
+  return JSON.stringify([...withBounce, label]);
 }
 
 function detectedBounce(parsed: ParsedEmail): BounceRecipient[] {
@@ -91,6 +99,22 @@ function mailboxes(list: ParsedMailbox[]): string {
   return JSON.stringify(list.map((mailbox) => ({ address: mailbox.address, name: mailbox.name })));
 }
 
+interface ScreenedSpam extends SpamAssessment {
+  labelled: boolean;
+}
+
+function assessSpam(env: Env, parsed: ParsedEmail, envelopeFrom: string): ScreenedSpam {
+  const assessment = scoreSpam(parsed, envelopeFrom);
+  if (rejectsAttachment(assessment.reasons)) {
+    throw new InboundRejected(REJECT_ATTACHMENT_TYPE);
+  }
+  const policy = config(env).spam;
+  if (policy.rejectThreshold > 0 && assessment.score >= policy.rejectThreshold) {
+    throw new InboundRejected(REJECT_SPAM);
+  }
+  return { ...assessment, labelled: assessment.score >= policy.labelThreshold };
+}
+
 export async function ingestInbound(env: Env, input: InboundInput): Promise<InboundResult> {
   if (input.raw.byteLength > INBOUND_MAX_BYTES) {
     throw new InboundRejected(REJECT_TOO_LARGE);
@@ -105,6 +129,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   }
 
   const parsed = await parseMime(input.raw);
+  const spam = assessSpam(env, parsed, input.envelopeFrom);
   const bounced = detectedBounce(parsed);
   const messageId = newId("msg");
   const rawKey = `raw/${messageId}.eml`;
@@ -161,10 +186,12 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     text: parsed.text,
     html: parsed.html,
     preview: parsed.preview,
-    labelsJson: inboundLabels(tag, bounced.length > 0),
+    labelsJson: inboundLabels(tag, spam.labelled, bounced.length > 0),
     size: input.raw.byteLength,
     hasAttachments: stored.length > 0 ? 1 : 0,
     rawKey,
+    spamScore: spam.score,
+    spamReasonsJson: JSON.stringify(spam.reasons),
     createdAt,
   });
 

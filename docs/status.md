@@ -33,6 +33,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | wait | done | `src/waiter.ts`; `InboxWaiter` is a Durable Object per inbox holding parked `wait` calls and no storage, notified by `ingestInbound` after the row is committed, with the 2-second D1 poll kept as the fallback when `INBOX_WAITER` is unbound or the RPC throws |
 | usage | done | `src/core/usage.ts`, `src/db/usage.ts`, `migrations/0007_usage.sql`; upsert counters for messages sent, messages received and stored bytes, read through `GET /v1/usage` or `get_usage`, enforced as `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` |
 | oauth | done | `src/core/oauth.ts`, `src/http/routes/oauth.ts`, `src/http/oauth-pages.ts`, `migrations/0009_oauth.sql`; RFC 8414 and RFC 9728 metadata, RFC 7591 registration, an authorization-code flow with PKCE behind the existing OTP, and tokens that are ordinary `api_keys` rows |
+| spam | done | `src/email/spam.ts`, `migrations/0011_spam.sql`; every inbound message is scored from headers, identity, subject, body, list and attachment signals, labelled `spam` at `SPAM_LABEL_THRESHOLD`, refused at `SPAM_REJECT_THRESHOLD`, refused outright for an executable attachment and scored but not refused for a script attachment; `spam_score` and `spam_reasons` ride on every message object and `max_spam_score` filters a list |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time. Text is extracted from PDF and docx on ingest into `attachments.text`, read through `GET .../attachments/:attachment_id/text` or `get_attachment`; `text_status` rides on every attachment object |
 
 ## Limitations
@@ -91,6 +92,21 @@ What is built, and what a contributor needs to know before touching it. Design r
   and `last_seen_at` is recorded so a later policy can expire on it without another migration.
 - Nothing expires R2 raw MIME objects. They are removed only by the explicit inbox, thread and
   message delete paths, so a busy deployment grows without bound.
+- Spam scoring is heuristics over one message. There is no reputation data, no corpus, no training
+  and no memory of the sender, so a first message from a legitimate sender with a thin html body
+  and a link scores the same as a mailshot with the same shape. The weights in `src/email/spam.ts`
+  are a starting point an operator is expected to tune through the two thresholds.
+- There is no antivirus engine and there cannot be one in a Worker. Attachment screening is by
+  extension, by double extension, by Office content type, and by the names inside a zip; a
+  renamed executable, a macro in a document that was not named `docm`, and anything inside an
+  archive that is not a zip pass through. A zip is listed, never decompressed, so nothing nested
+  deeper than one level is seen.
+- Script attachments are scored, not refused: `js`, `jse`, `wsf`, `sh`, `py`, `rb` and `pl` add
+  `attachment_script` at 30 whether they arrive loose or in a zip, so a zip of source code is
+  stored. Only the executable list refuses, and a deployment that wants scripts kept out has to
+  edit `EXECUTABLE_EXTENSIONS`; there is no var for it.
+- `spam_score` and `spam_reasons` are written once on ingest and never recomputed. Changing the
+  weights or a threshold moves what happens to new mail and leaves stored rows as they were.
 - Threading has no subject-based fallback. A reply from a client that drops both `In-Reply-To` and
   `References` starts a new thread.
 - `reply_all` puts every merged recipient in `To` and never in `Cc`, and a forward re-sends the
@@ -153,9 +169,12 @@ What is built, and what a contributor needs to know before touching it. Design r
   `test/support.ts` exports `resetDatabase(db)`; call it in `beforeEach` of any suite that writes.
   It does not clean up R2 objects.
 - `vitest.config.ts` pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`, the
-  three `QUOTA_*` vars, `ROUTING_MODE`, `CLOUDFLARE_ZONE_ID`, `WORKER_NAME`, `OPERATOR_TOKEN` and
+  three `QUOTA_*` vars, both `SPAM_*` thresholds, `ROUTING_MODE`, `CLOUDFLARE_ZONE_ID`,
+  `WORKER_NAME`, `OPERATOR_TOKEN` and
   `ADMIN_SECRET` in the miniflare bindings, so changing the deployment vars in `wrangler.jsonc`
-  cannot move the suite. HTTP and MCP suites must use the operator-token constant from
+  cannot move the suite. `test/spam.test.ts` asserts exact scores against the pinned
+  `SPAM_LABEL_THRESHOLD` of 50 and `SPAM_REJECT_THRESHOLD` of 90, and the suites that need other
+  thresholds pass `{...env, SPAM_REJECT_THRESHOLD: "0"}` per test rather than moving the pins. HTTP and MCP suites must use the operator-token constant from
   `test/support.ts`, because `SELF.fetch` takes no per-request env override.
 - The vitest pool exports no `fetchMock`, so the suites that assert on an outbound HTTP request
   stub the global `fetch` with `vi.stubGlobal` and undo it in `afterEach`. `test/webhooks.test.ts`
