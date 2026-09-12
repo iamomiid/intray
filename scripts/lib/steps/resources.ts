@@ -10,27 +10,34 @@ export const DATABASE = "intray";
 
 export const BUCKET = "intray";
 
-async function runD1(context: SetupContext, step: string): Promise<Outcome> {
+interface EnsuredDatabase {
+  databaseId: string;
+  created: boolean;
+}
+
+function ensureDatabase(context: SetupContext, step: string): EnsuredDatabase {
   const list = wrangler(step, ["d1", "list", "--json"], context.root, { allowFailure: true });
   const existing =
     list.status === 0
       ? parseD1Databases(list.output).find((database) => database.name === DATABASE)
       : undefined;
-
-  let databaseId = existing?.uuid ?? "";
-  let created = false;
-  if (databaseId === "") {
-    const create = wrangler(step, ["d1", "create", DATABASE], context.root);
-    const parsed = parseDatabaseId(create.output);
-    if (parsed === null) {
-      throw new SetupError(
-        step,
-        `created the database but found no uuid in the output\n${indent(create.output.trim())}`,
-      );
-    }
-    databaseId = parsed;
-    created = true;
+  if (existing !== undefined && existing.uuid !== "") {
+    return { databaseId: existing.uuid, created: false };
   }
+
+  const create = wrangler(step, ["d1", "create", DATABASE], context.root);
+  const parsed = parseDatabaseId(create.output);
+  if (parsed === null) {
+    throw new SetupError(
+      step,
+      `created the database but found no uuid in the output\n${indent(create.output.trim())}`,
+    );
+  }
+  return { databaseId: parsed, created: true };
+}
+
+async function runD1(context: SetupContext, step: string): Promise<Outcome> {
+  const { databaseId, created } = ensureDatabase(context, step);
 
   const config = readWranglerConfig(context.configPath);
   const binding = config.d1_databases?.[0];

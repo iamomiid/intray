@@ -21,12 +21,10 @@ import { AppError } from "../src/lib/errors";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
 import replyEml from "./fixtures/reply.eml?raw";
-import { resetDatabase } from "./support";
+import { indexes, resetDatabase } from "./support";
 
 const ACCOUNT_ID = "acc_messages";
 const INBOX_ID = "agent@intray.example";
-
-let principal: Principal;
 
 interface SeedInput {
   id: string;
@@ -103,8 +101,7 @@ async function seed(input: SeedInput): Promise<string> {
   return messageId;
 }
 
-beforeEach(async () => {
-  await resetDatabase(env.DB);
+async function seedInbox(): Promise<Principal> {
   const account = await insertAccount(env.DB, {
     id: ACCOUNT_ID,
     email: "owner@example.com",
@@ -118,10 +115,15 @@ beforeEach(async () => {
     displayName: "Agent",
     createdAt: 1,
   });
-  principal = { account, keyId: "key_messages", pending: false };
+  return { account, keyId: "key_messages", pending: false };
+}
+
+beforeEach(async () => {
+  await resetDatabase(env.DB);
 });
 
 it("lists messages newest first", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000, subject: "first" });
   await seed({ id: "b", createdAt: 2000, subject: "second" });
   await seed({ id: "c", createdAt: 3000, subject: "third" });
@@ -132,6 +134,7 @@ it("lists messages newest first", async () => {
 });
 
 it("filters messages by labels, address, subject, and time window", async () => {
+  const principal = await seedInbox();
   await seed({
     id: "a",
     createdAt: 1000,
@@ -174,6 +177,7 @@ it("filters messages by labels, address, subject, and time window", async () => 
 });
 
 it("rejects a non numeric since or before", async () => {
+  const principal = await seedInbox();
   await rejectsWith(
     listMessages(env, principal, INBOX_ID, { since: "yesterday" }),
     400,
@@ -183,6 +187,7 @@ it("rejects a non numeric since or before", async () => {
 });
 
 it("pages messages with a cursor", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000 });
   await seed({ id: "b", createdAt: 2000 });
   await seed({ id: "c", createdAt: 3000 });
@@ -200,6 +205,7 @@ it("pages messages with a cursor", async () => {
 });
 
 it("searches subject, body, and sender", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000, subject: "Quarterly status", text: "all green" });
   await seed({ id: "b", createdAt: 2000, subject: "Lunch", text: "pizza at noon" });
 
@@ -213,6 +219,7 @@ it("searches subject, body, and sender", async () => {
 });
 
 it("searches sender address and sender name", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000, from: "billing@vendor.example", subject: "Statement" });
   await seed({ id: "b", createdAt: 2000, from: "alice@example.com", subject: "Lunch" });
   await env.DB.prepare(`UPDATE messages SET from_name = ? WHERE message_id = ?`)
@@ -227,6 +234,7 @@ it("searches sender address and sender name", async () => {
 });
 
 it("matches prefixes and ands every term", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000, subject: "Invoices for March", text: "all green" });
   await seed({ id: "b", createdAt: 2000, subject: "Receipts for March", text: "all green" });
 
@@ -241,6 +249,7 @@ it("matches prefixes and ands every term", async () => {
 });
 
 it("ranks a subject hit above a body hit", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000, subject: "Invoice 42", text: "all green" });
   await seed({ id: "b", createdAt: 2000, subject: "Lunch", text: "the invoice is attached" });
 
@@ -249,6 +258,7 @@ it("ranks a subject hit above a body hit", async () => {
 });
 
 it("treats fts operators in q as plain text and caps the term count", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000, subject: "Invoice 42", text: "all green" });
 
   for (const q of ['invoice "42"', "invoice*", "invoice -42", "(invoice)"]) {
@@ -273,7 +283,8 @@ it("treats fts operators in q as plain text and caps the term count", async () =
 });
 
 it("pages search results without repeating a message", async () => {
-  for (let index = 0; index < 3; index += 1) {
+  const principal = await seedInbox();
+  for (const index of indexes(3)) {
     await seed({ id: String(index), createdAt: 1000 + index, subject: "Invoice", text: "green" });
   }
 
@@ -297,6 +308,7 @@ it("pages search results without repeating a message", async () => {
 });
 
 it("keeps the search index in sync with message writes", async () => {
+  const principal = await seedInbox();
   const messageId = await seed({ id: "a", createdAt: 1000, subject: "Invoice 42", text: "green" });
   expect((await searchMessages(env, principal, INBOX_ID, { q: "invoice" })).items).toHaveLength(1);
 
@@ -309,6 +321,7 @@ it("keeps the search index in sync with message writes", async () => {
 });
 
 it("returns a message with its attachments", async () => {
+  const principal = await seedInbox();
   const delivered = await deliver(htmlAttachmentEml, "carol@example.com");
   const message = await getMessage(env, principal, INBOX_ID, delivered.messageId);
 
@@ -325,6 +338,7 @@ it("returns a message with its attachments", async () => {
 });
 
 it("streams the raw message from r2", async () => {
+  const principal = await seedInbox();
   const delivered = await deliver(plainEml);
   const raw = await getRawMessage(env, principal, INBOX_ID, delivered.messageId);
 
@@ -337,6 +351,7 @@ it("streams the raw message from r2", async () => {
 });
 
 it("replaces the label set and validates it", async () => {
+  const principal = await seedInbox();
   const messageId = await seed({ id: "a", createdAt: 1000 });
 
   const updated = await updateMessageLabels(env, principal, INBOX_ID, messageId, {
@@ -369,6 +384,7 @@ it("replaces the label set and validates it", async () => {
 });
 
 it("deletes a message, its r2 objects, and an emptied thread", async () => {
+  const principal = await seedInbox();
   const delivered = await ingestInbound(env, {
     envelopeFrom: "carol@example.com",
     envelopeTo: INBOX_ID,
@@ -388,6 +404,7 @@ it("deletes a message, its r2 objects, and an emptied thread", async () => {
 });
 
 it("keeps a thread that still holds messages after a delete", async () => {
+  const principal = await seedInbox();
   const first = await deliver(plainEml);
   const second = await ingestInbound(env, {
     envelopeFrom: "alice@example.com",
@@ -401,6 +418,7 @@ it("keeps a thread that still holds messages after a delete", async () => {
 });
 
 it("adds and removes labels across a batch, in the order given", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000 });
   await seed({ id: "b", createdAt: 2000 });
   await seed({ id: "c", createdAt: 3000 });
@@ -422,6 +440,7 @@ it("adds and removes labels across a batch, in the order given", async () => {
 });
 
 it("rejects a batch label change that is empty, oversized, or past the label cap", async () => {
+  const principal = await seedInbox();
   await seed({
     id: "a",
     createdAt: 1000,
@@ -462,6 +481,7 @@ it("rejects a batch label change that is empty, oversized, or past the label cap
 });
 
 it("changes nothing when a batch names a message the inbox does not hold", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000 });
 
   await rejectsWith(
@@ -489,6 +509,7 @@ it("changes nothing when a batch names a message the inbox does not hold", async
 });
 
 it("batch deletes messages, their objects, and threads left empty", async () => {
+  const principal = await seedInbox();
   const attachments = await ingestInbound(env, {
     envelopeFrom: "carol@example.com",
     envelopeTo: INBOX_ID,
@@ -519,6 +540,7 @@ it("batch deletes messages, their objects, and threads left empty", async () => 
 });
 
 it("relabels and deletes a full batch of the maximum size", async () => {
+  const principal = await seedInbox();
   const threadIds = ["thr_bulk_0", "thr_bulk_1", "thr_bulk_2", "thr_bulk_3"];
   for (const threadId of threadIds) {
     await insertThread(env.DB, {
@@ -530,7 +552,7 @@ it("relabels and deletes a full batch of the maximum size", async () => {
     });
   }
   const messageIds: string[] = [];
-  for (let index = 0; index < 100; index += 1) {
+  for (const index of indexes(100)) {
     const threadId = threadIds[index % threadIds.length] as string;
     messageIds.push(await seed({ id: `bulk_${index}`, createdAt: 1000 + index, threadId }));
   }
@@ -571,6 +593,7 @@ it("relabels and deletes a full batch of the maximum size", async () => {
 });
 
 it("returns immediately when a message already exists after since", async () => {
+  const principal = await seedInbox();
   await seed({ id: "a", createdAt: 1000 });
   await seed({ id: "b", createdAt: 3000 });
 
@@ -586,6 +609,7 @@ it("returns immediately when a message already exists after since", async () => 
 });
 
 it("returns a message that arrives during the wait", async () => {
+  const principal = await seedInbox();
   const since = Date.now();
   const pending = waitForMessage(env, principal, INBOX_ID, { since, timeout: 10 }, { pollMs: 20 });
   await sleep(50);
@@ -596,6 +620,7 @@ it("returns a message that arrives during the wait", async () => {
 });
 
 it("returns no items when the wait times out", async () => {
+  const principal = await seedInbox();
   const started = Date.now();
   const waited = await waitForMessage(
     env,

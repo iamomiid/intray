@@ -23,13 +23,16 @@ export interface WranglerConfig {
   [key: string]: unknown;
 }
 
-export function readWranglerConfig(path: string): WranglerConfig {
-  let parsed: unknown = null;
+function parseConfigFile(path: string): unknown {
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
     throw new SetupError("config", `could not read ${path} as JSON: ${errorMessage(error)}`);
   }
+}
+
+export function readWranglerConfig(path: string): WranglerConfig {
+  const parsed = parseConfigFile(path);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new SetupError("config", `${path} is not a JSON object`);
   }

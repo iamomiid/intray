@@ -31,6 +31,77 @@ export const OPERATOR_TOKEN_MIN_LENGTH = 32;
 
 export const GENERATE_OPERATOR_TOKEN = "generate";
 
+function applyOptionValue(parsed: ParsedArgs, name: string, value: string): void {
+  if (name === "--domain") {
+    parsed.domain = value.trim().toLowerCase();
+  } else if (name === "--email") {
+    parsed.email = value.trim().toLowerCase();
+  } else if (name === "--operator-token") {
+    const trimmed = value.trim();
+    parsed.operatorToken = trimmed === "" ? GENERATE_OPERATOR_TOKEN : trimmed;
+  } else {
+    parsed.allowSignup = emailList(value);
+  }
+}
+
+function applyArgument(argv: string[], index: number, parsed: ParsedArgs): number {
+  const token = argv[index] ?? "";
+  const after = index + 1;
+  if (token === "--help" || token === "-h") {
+    parsed.help = true;
+    return after;
+  }
+  if (token === "--yes" || token === "-y") {
+    parsed.yes = true;
+    return after;
+  }
+  if (token === "--dmarc-reports") {
+    parsed.dmarcReports = true;
+    return after;
+  }
+  if (token === "--accept-changes") {
+    parsed.acceptChanges = true;
+    return after;
+  }
+
+  const equals = token.indexOf("=");
+  const name = equals === -1 ? token : token.slice(0, equals);
+  if (
+    name !== "--domain" &&
+    name !== "--email" &&
+    name !== "--allow-signup" &&
+    name !== "--operator-token"
+  ) {
+    parsed.errors.push(`unknown argument: ${token}`);
+    return after;
+  }
+
+  if (equals !== -1) {
+    applyOptionValue(parsed, name, token.slice(equals + 1));
+    return after;
+  }
+
+  const optional = name === "--operator-token";
+  const next = argv[after];
+  if (next === undefined || next.startsWith(optional ? "--" : "-")) {
+    if (optional) {
+      parsed.operatorToken = GENERATE_OPERATOR_TOKEN;
+      return after;
+    }
+    parsed.errors.push(`${name} requires a value`);
+    return after;
+  }
+  applyOptionValue(parsed, name, next);
+  return after + 1;
+}
+
+function applyArguments(argv: string[], index: number, parsed: ParsedArgs): void {
+  if (index >= argv.length) {
+    return;
+  }
+  applyArguments(argv, applyArgument(argv, index, parsed), parsed);
+}
+
 export function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     domain: "",
@@ -44,66 +115,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     errors: [],
   };
 
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] ?? "";
-    if (token === "--help" || token === "-h") {
-      parsed.help = true;
-      continue;
-    }
-    if (token === "--yes" || token === "-y") {
-      parsed.yes = true;
-      continue;
-    }
-    if (token === "--dmarc-reports") {
-      parsed.dmarcReports = true;
-      continue;
-    }
-    if (token === "--accept-changes") {
-      parsed.acceptChanges = true;
-      continue;
-    }
-
-    const equals = token.indexOf("=");
-    const name = equals === -1 ? token : token.slice(0, equals);
-    if (
-      name !== "--domain" &&
-      name !== "--email" &&
-      name !== "--allow-signup" &&
-      name !== "--operator-token"
-    ) {
-      parsed.errors.push(`unknown argument: ${token}`);
-      continue;
-    }
-
-    const optional = name === "--operator-token";
-    let value = "";
-    if (equals === -1) {
-      const next = argv[index + 1];
-      if (next === undefined || next.startsWith(optional ? "--" : "-")) {
-        if (optional) {
-          parsed.operatorToken = GENERATE_OPERATOR_TOKEN;
-          continue;
-        }
-        parsed.errors.push(`${name} requires a value`);
-        continue;
-      }
-      value = next;
-      index += 1;
-    } else {
-      value = token.slice(equals + 1);
-    }
-
-    if (name === "--domain") {
-      parsed.domain = value.trim().toLowerCase();
-    } else if (name === "--email") {
-      parsed.email = value.trim().toLowerCase();
-    } else if (name === "--operator-token") {
-      const trimmed = value.trim();
-      parsed.operatorToken = trimmed === "" ? GENERATE_OPERATOR_TOKEN : trimmed;
-    } else {
-      parsed.allowSignup = emailList(value);
-    }
-  }
+  applyArguments(argv, 0, parsed);
 
   if (parsed.help) {
     return parsed;
@@ -297,10 +309,7 @@ export function parseD1Databases(output: string): D1Summary[] {
 
 export function zoneCandidates(domain: string): string[] {
   const labels = domain.split(".");
-  const candidates: string[] = [];
-  for (let index = 0; index + 1 < labels.length; index += 1) {
-    candidates.push(labels.slice(index).join("."));
-  }
+  const candidates = labels.slice(0, -1).map((_, index) => labels.slice(index).join("."));
   return candidates.length === 0 ? [domain] : candidates;
 }
 

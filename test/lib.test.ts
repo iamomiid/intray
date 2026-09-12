@@ -14,6 +14,7 @@ import {
 import { constantTimeEqual, generateApiKey, sha256Hex } from "../src/lib/hash";
 import { clampLimit, decodeCursor, encodeCursor, page } from "../src/lib/pagination";
 import { normalizeRfcMessageId, parseReferences } from "../src/lib/rfc";
+import { indexes } from "./support";
 
 it("parses display names and bare addresses", () => {
   expect(parseAddress('"Alice Example" <alice@example.com>')).toEqual({
@@ -91,7 +92,7 @@ it("validates usernames and knows reserved and blocked values", () => {
 });
 
 it("generates valid random usernames", () => {
-  for (let index = 0; index < 20; index += 1) {
+  for (const _attempt of indexes(20)) {
     const username = randomUsername();
     expect(isValidUsername(username)).toBe(true);
     expect(username).toMatch(/^[a-z]+-[a-z]+-\d{4}$/);

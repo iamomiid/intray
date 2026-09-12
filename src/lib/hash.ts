@@ -1,28 +1,17 @@
 export function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
+  const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export function base64UrlDecode(text: string): Uint8Array {
   const padded = text.replace(/-/g, "+").replace(/_/g, "/");
   const binary = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 export async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  let hex = "";
-  for (const byte of new Uint8Array(digest)) {
-    hex += byte.toString(16).padStart(2, "0");
-  }
-  return hex;
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export function randomToken(bytes: number): string {
@@ -43,12 +32,10 @@ export async function generateApiKey(): Promise<GeneratedApiKey> {
 }
 
 export function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  if (left.byteLength !== right.byteLength) {
     return false;
   }
-  let difference = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
-  }
-  return difference === 0;
+  return crypto.subtle.timingSafeEqual(left, right);
 }

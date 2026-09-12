@@ -17,7 +17,15 @@ import { type ApiKeyObject, toApiKey } from "./serialize";
 
 const DEFAULT_SCOPES_JSON = JSON.stringify(["*"]);
 
-let warnedAboutShortOperatorToken = false;
+const emittedWarnings = new Set<string>();
+
+function warnOnce(message: string): void {
+  if (emittedWarnings.has(message)) {
+    return;
+  }
+  emittedWarnings.add(message);
+  console.warn(message);
+}
 
 function operatorToken(env: Env): string | null {
   const token = env.OPERATOR_TOKEN;
@@ -25,12 +33,9 @@ function operatorToken(env: Env): string | null {
     return null;
   }
   if (token.length < OPERATOR_TOKEN_MIN_LENGTH) {
-    if (!warnedAboutShortOperatorToken) {
-      warnedAboutShortOperatorToken = true;
-      console.warn(
-        `OPERATOR_TOKEN is shorter than ${OPERATOR_TOKEN_MIN_LENGTH} characters and is ignored`,
-      );
-    }
+    warnOnce(
+      `OPERATOR_TOKEN is shorter than ${OPERATOR_TOKEN_MIN_LENGTH} characters and is ignored`,
+    );
     return null;
   }
   return token;

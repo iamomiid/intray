@@ -18,10 +18,12 @@ const ACCOUNT_ID = "acc_outbound";
 const INBOX_ID = "agent@intray.example";
 const OWNER_EMAIL = "owner@example.com";
 
-let principal: Principal;
-let unverified: Principal;
-let calls: EmailMessageBuilder[];
-let outbox: Env;
+interface Fixture {
+  principal: Principal;
+  unverified: Principal;
+  calls: EmailMessageBuilder[];
+  outbox: Env;
+}
 
 function bytes(text: string): Uint8Array {
   return new TextEncoder().encode(text.replace(/\r?\n/g, "\r\n"));
@@ -63,8 +65,7 @@ function base64(text: string): string {
   return btoa(text);
 }
 
-beforeEach(async () => {
-  await resetDatabase(env.DB);
+async function seedInbox(): Promise<Fixture> {
   const account = await insertAccount(env.DB, {
     id: ACCOUNT_ID,
     email: OWNER_EMAIL,
@@ -79,17 +80,25 @@ beforeEach(async () => {
     createdAt: 1,
   });
   const verified = await markAccountVerified(env.DB, ACCOUNT_ID, 2);
-  principal = { account: verified ?? account, keyId: "key_outbound", pending: false };
-  unverified = {
-    account: { ...account, verified_at: null },
-    keyId: "key_outbound",
-    pending: false,
+  const calls: EmailMessageBuilder[] = [];
+  return {
+    principal: { account: verified ?? account, keyId: "key_outbound", pending: false },
+    unverified: {
+      account: { ...account, verified_at: null },
+      keyId: "key_outbound",
+      pending: false,
+    },
+    calls,
+    outbox: withEmail(fakeEmail(calls)),
   };
-  calls = [];
-  outbox = withEmail(fakeEmail(calls));
+}
+
+beforeEach(async () => {
+  await resetDatabase(env.DB);
 });
 
 it("sends a message and stores the outbound row", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const message = await sendMessage(outbox, principal, INBOX_ID, {
     to: "bob@example.com",
     cc: ["carol@example.com"],
@@ -132,6 +141,7 @@ it("sends a message and stores the outbound row", async () => {
 });
 
 it("stores outbound attachments in r2", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const message = await sendMessage(outbox, principal, INBOX_ID, {
     to: "bob@example.com",
     subject: "Notes",
@@ -157,6 +167,7 @@ it("stores outbound attachments in r2", async () => {
 });
 
 it("replies in the parent thread with threading headers", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const parent = await deliver(plainEml);
   const parentRow = await getMessage(env.DB, INBOX_ID, parent.messageId);
 
@@ -180,6 +191,7 @@ it("replies in the parent thread with threading headers", async () => {
 });
 
 it("threads an inbound reply to a sent message back into the same thread", async () => {
+  const { principal, outbox } = await seedInbox();
   const parent = await deliver(plainEml);
   const reply = await replyToMessage(outbox, principal, INBOX_ID, parent.messageId, {
     text: "On it.",
@@ -210,6 +222,7 @@ it("threads an inbound reply to a sent message back into the same thread", async
 });
 
 it("sends from a subaddressed own address and labels the row with the tag", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const message = await sendMessage(outbox, principal, INBOX_ID, {
     from: "Agent+Invoices@Intray.Example",
     to: "bob@example.com",
@@ -229,6 +242,7 @@ it("sends from a subaddressed own address and labels the row with the tag", asyn
 });
 
 it("leaves the From header and labels alone for an untagged from", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const message = await sendMessage(outbox, principal, INBOX_ID, {
     from: INBOX_ID,
     to: "bob@example.com",
@@ -242,6 +256,7 @@ it("leaves the From header and labels alone for an untagged from", async () => {
 });
 
 it("keeps the subaddressed From but drops a tag that cannot be a label", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const tag = "x".repeat(65);
   const message = await sendMessage(outbox, principal, INBOX_ID, {
     from: `agent+${tag}@intray.example`,
@@ -255,6 +270,7 @@ it("keeps the subaddressed From but drops a tag that cannot be a label", async (
 });
 
 it("refuses a from that is not the inbox address", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   await rejectsWith(
     sendMessage(outbox, principal, INBOX_ID, {
       from: "someone-else@intray.example",
@@ -269,6 +285,7 @@ it("refuses a from that is not the inbox address", async () => {
 });
 
 it("replies from a subaddressed address and labels the reply", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const parent = await deliver(plainEml);
   const reply = await replyToMessage(outbox, principal, INBOX_ID, parent.messageId, {
     from: "agent+support@intray.example",
@@ -281,6 +298,7 @@ it("replies from a subaddressed address and labels the reply", async () => {
 });
 
 it("labels an inbound reply that comes back to the subaddressed sender", async () => {
+  const { principal, outbox } = await seedInbox();
   const sent = await sendMessage(outbox, principal, INBOX_ID, {
     from: "agent+invoices@intray.example",
     to: "bob@example.com",
@@ -321,6 +339,7 @@ it("labels an inbound reply that comes back to the subaddressed sender", async (
 });
 
 it("carries the parent references forward and excludes the inbox from reply_all", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const parent = await ingestInbound(env, {
     envelopeFrom: "alice@example.com",
     envelopeTo: INBOX_ID,
@@ -356,6 +375,7 @@ it("carries the parent references forward and excludes the inbox from reply_all"
 });
 
 it("omits threading headers when the parent has no message id", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const parent = await ingestInbound(env, {
     envelopeFrom: "anon@example.com",
     envelopeTo: INBOX_ID,
@@ -384,6 +404,7 @@ it("omits threading headers when the parent has no message id", async () => {
 });
 
 it("forwards a message with its quoted body and attachments", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   const parent = await deliver(htmlAttachmentEml, "carol@example.com");
 
   const forwarded = await forwardMessage(outbox, principal, INBOX_ID, parent.messageId, {
@@ -417,6 +438,7 @@ it("forwards a message with its quoted body and attachments", async () => {
 });
 
 it("lets an unverified account send only to its own address", async () => {
+  const { unverified, calls, outbox } = await seedInbox();
   await rejectsWith(
     sendMessage(outbox, unverified, INBOX_ID, {
       to: "bob@example.com",
@@ -438,6 +460,7 @@ it("lets an unverified account send only to its own address", async () => {
 });
 
 it("validates recipients, attachments, and size", async () => {
+  const { principal, calls, outbox } = await seedInbox();
   await rejectsWith(
     sendMessage(outbox, principal, INBOX_ID, { subject: "Hi", text: "Hi" }),
     400,
@@ -489,6 +512,7 @@ it("validates recipients, attachments, and size", async () => {
 });
 
 it("maps send binding error codes", async () => {
+  const { principal } = await seedInbox();
   const body = { to: "bob@example.com", subject: "Hi", text: "Hi" };
 
   await rejectsWith(

@@ -117,13 +117,16 @@ export async function expectEnvelope<T>(
   }
 }
 
-function decode<T>(text: string, status: number): CfResponse<T> | null {
-  let payload: unknown = null;
+function parseJson(text: string): unknown {
   try {
-    payload = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
     return null;
   }
+}
+
+function decode<T>(text: string, status: number): CfResponse<T> | null {
+  const payload = parseJson(text);
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     return null;
   }

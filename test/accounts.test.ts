@@ -10,7 +10,7 @@ import { AppError } from "../src/lib/errors";
 import { sha256Hex } from "../src/lib/hash";
 import { OTP_MAX_ATTEMPTS, OTP_MAX_PER_HOUR } from "../src/lib/otp";
 import { now } from "../src/lib/time";
-import { resetDatabase } from "./support";
+import { indexes, resetDatabase } from "./support";
 
 const EMAIL = "human@agents.test";
 
@@ -291,7 +291,7 @@ it("rate limits by ip and skips the limiter without one", async () => {
 it("refuses more codes than the hourly allowance", async () => {
   const email = fakeEmail();
   const target = testEnv({ EMAIL: email.binding });
-  for (let index = 0; index < OTP_MAX_PER_HOUR; index += 1) {
+  for (const _attempt of indexes(OTP_MAX_PER_HOUR)) {
     const result = await signup(target, { email: EMAIL });
     expect(result.otp_sent).toBe(true);
   }
@@ -341,7 +341,8 @@ it("counts wrong codes and locks out after the attempt limit", async () => {
   const result = await signup(testEnv({ EMAIL: email.binding }), { email: EMAIL });
   const principal = await principalOf(result.api_key);
 
-  for (let attempt = 1; attempt <= OTP_MAX_ATTEMPTS; attempt += 1) {
+  for (const index of indexes(OTP_MAX_ATTEMPTS)) {
+    const attempt = index + 1;
     const failure = await rejectsWith(
       verify(env, principal, { code: "999999" }),
       400,

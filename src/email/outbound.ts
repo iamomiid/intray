@@ -148,6 +148,14 @@ export function normalizeRecipients(value: string | string[] | undefined): strin
   return recipients;
 }
 
+function decodeAttachmentContent(content: string): Uint8Array {
+  try {
+    return base64UrlDecode(content);
+  } catch {
+    throw badRequest("attachment content must be base64");
+  }
+}
+
 export function decodeAttachment(input: OutboundAttachment): DecodedAttachment {
   if (typeof input !== "object" || input === null) {
     throw badRequest("invalid attachment");
@@ -161,16 +169,10 @@ export function decodeAttachment(input: OutboundAttachment): DecodedAttachment {
   if (typeof input.content !== "string") {
     throw badRequest("attachment content must be base64");
   }
-  let content: Uint8Array;
-  try {
-    content = base64UrlDecode(input.content);
-  } catch {
-    throw badRequest("attachment content must be base64");
-  }
   return {
     filename: input.filename.trim(),
     contentType: input.content_type.trim(),
-    content,
+    content: decodeAttachmentContent(input.content),
   };
 }
 
@@ -450,10 +452,9 @@ const BAD_REQUEST_CODES: readonly string[] = [
   "E_HEADER_NOT_ALLOWED",
 ];
 
-export async function send(env: Env, builder: EmailMessageBuilder): Promise<string | null> {
-  let result: EmailSendResult;
+async function sendOrMapError(env: Env, builder: EmailMessageBuilder): Promise<EmailSendResult> {
   try {
-    result = await env.EMAIL.send(builder);
+    return await env.EMAIL.send(builder);
   } catch (error) {
     const code = errorCode(error);
     if (code === "E_SENDER_NOT_VERIFIED") {
@@ -471,5 +472,9 @@ export async function send(env: Env, builder: EmailMessageBuilder): Promise<stri
     }
     throw error;
   }
+}
+
+export async function send(env: Env, builder: EmailMessageBuilder): Promise<string | null> {
+  const result = await sendOrMapError(env, builder);
   return normalizeRfcMessageId(result.messageId);
 }
