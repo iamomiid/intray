@@ -36,9 +36,9 @@ same `550` and `552` reasons in the response body so the caller can bounce.
 `cloudflare` and instead checks that the chosen provider's secrets are set. Drafts drain
 through the transport. The test suites' `EMAIL` fake becomes a `MailTransport` fake.
 
-## 5. Deliverability visibility as MCP tools
+## 3. Deliverability visibility as MCP tools
 
 Expose what an agent currently cannot see about its own sending: the DMARC aggregate reports for
 the mail domain, a reputation summary derived from them and from bounce traffic, and the
-suppression list from item 3. Read-only tools alongside the existing ones, so an agent can find out
+suppression list. Read-only tools alongside the existing ones, so an agent can find out
 that its mail is being rejected without an operator reading a dashboard for it.
