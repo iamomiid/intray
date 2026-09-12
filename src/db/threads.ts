@@ -103,14 +103,13 @@ export async function findThreadByRfcMessageIds(
   if (rfcIds.length === 0) {
     return null;
   }
-  const placeholders = rfcIds.map(() => "?").join(", ");
   const row = await db
     .prepare(
       `SELECT thread_id FROM messages
-       WHERE inbox_id = ? AND rfc_message_id IN (${placeholders})
+       WHERE inbox_id = ? AND rfc_message_id IN (SELECT value FROM json_each(?))
        ORDER BY created_at ASC LIMIT 1`,
     )
-    .bind(inboxId, ...rfcIds)
+    .bind(inboxId, JSON.stringify(rfcIds))
     .first<{ thread_id: string }>();
   return row?.thread_id ?? null;
 }
@@ -135,15 +134,16 @@ export async function deleteThread(
     )
     .bind(threadId)
     .all<{ r2_key: string }>();
-  await db
-    .prepare(
-      `DELETE FROM attachments
-       WHERE message_id IN (SELECT message_id FROM messages WHERE thread_id = ?)`,
-    )
-    .bind(threadId)
-    .run();
-  await db.prepare(`DELETE FROM messages WHERE thread_id = ?`).bind(threadId).run();
-  await db.prepare(`DELETE FROM threads WHERE thread_id = ?`).bind(threadId).run();
+  await db.batch([
+    db
+      .prepare(
+        `DELETE FROM attachments
+         WHERE message_id IN (SELECT message_id FROM messages WHERE thread_id = ?)`,
+      )
+      .bind(threadId),
+    db.prepare(`DELETE FROM messages WHERE thread_id = ?`).bind(threadId),
+    db.prepare(`DELETE FROM threads WHERE thread_id = ? AND inbox_id = ?`).bind(threadId, inboxId),
+  ]);
   return {
     rawKeys: raws.results.map((row) => row.raw_key),
     attachmentKeys: attachments.results.map((row) => row.r2_key),

@@ -1,6 +1,8 @@
 import { env } from "cloudflare:test";
 import { beforeEach, expect, it } from "vitest";
 import {
+  batchDeleteMessages,
+  batchUpdateLabels,
   deleteMessage,
   getMessage,
   getRawMessage,
@@ -18,6 +20,7 @@ import { type InboundResult, ingestInbound } from "../src/email/inbound";
 import { AppError } from "../src/lib/errors";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
+import replyEml from "./fixtures/reply.eml?raw";
 import { resetDatabase } from "./support";
 
 const ACCOUNT_ID = "acc_messages";
@@ -33,6 +36,7 @@ interface SeedInput {
   subject?: string;
   text?: string;
   labels?: string[];
+  threadId?: string;
 }
 
 function bytes(text: string): Uint8Array {
@@ -57,15 +61,17 @@ async function rejectsWith(promise: Promise<unknown>, status: number, code: stri
 }
 
 async function seed(input: SeedInput): Promise<string> {
-  const threadId = `thr_${input.id}`;
+  const threadId = input.threadId ?? `thr_${input.id}`;
   const messageId = `msg_${input.id}`;
-  await insertThread(env.DB, {
-    threadId,
-    inboxId: INBOX_ID,
-    subject: input.subject ?? null,
-    lastMessageAt: input.createdAt,
-    participantsJson: "[]",
-  });
+  if (input.threadId === undefined) {
+    await insertThread(env.DB, {
+      threadId,
+      inboxId: INBOX_ID,
+      subject: input.subject ?? null,
+      lastMessageAt: input.createdAt,
+      participantsJson: "[]",
+    });
+  }
   await insertMessage(env.DB, {
     messageId,
     inboxId: INBOX_ID,
@@ -392,6 +398,176 @@ it("keeps a thread that still holds messages after a delete", async () => {
 
   await deleteMessage(env, principal, INBOX_ID, first.messageId);
   expect(await getThread(env.DB, INBOX_ID, second.threadId)).not.toBeNull();
+});
+
+it("adds and removes labels across a batch, in the order given", async () => {
+  await seed({ id: "a", createdAt: 1000 });
+  await seed({ id: "b", createdAt: 2000 });
+  await seed({ id: "c", createdAt: 3000 });
+
+  const updated = await batchUpdateLabels(env, principal, INBOX_ID, {
+    message_ids: ["msg_c", "msg_a", "msg_c"],
+    add: ["archived", "archived"],
+    remove: ["unread"],
+  });
+
+  expect(updated.items.map((message) => message.message_id)).toEqual(["msg_c", "msg_a"]);
+  for (const message of updated.items) {
+    expect(message.labels).toEqual(["received", "archived"]);
+  }
+  expect((await getMessage(env, principal, INBOX_ID, "msg_b")).labels).toEqual([
+    "received",
+    "unread",
+  ]);
+});
+
+it("rejects a batch label change that is empty, oversized, or past the label cap", async () => {
+  await seed({
+    id: "a",
+    createdAt: 1000,
+    labels: Array.from({ length: 20 }, (_value, index) => `label-${index}`),
+  });
+
+  await rejectsWith(
+    batchUpdateLabels(env, principal, INBOX_ID, { message_ids: ["msg_a"] }),
+    400,
+    "bad_request",
+  );
+  await rejectsWith(
+    batchUpdateLabels(env, principal, INBOX_ID, { message_ids: ["msg_a"], add: [] }),
+    400,
+    "bad_request",
+  );
+  await rejectsWith(
+    batchUpdateLabels(env, principal, INBOX_ID, { message_ids: [], add: ["archived"] }),
+    400,
+    "bad_request",
+  );
+  await rejectsWith(
+    batchUpdateLabels(env, principal, INBOX_ID, {
+      message_ids: Array.from({ length: 101 }, (_value, index) => `msg_${index}`),
+      add: ["archived"],
+    }),
+    400,
+    "bad_request",
+  );
+  await rejectsWith(
+    batchUpdateLabels(env, principal, INBOX_ID, { message_ids: ["msg_a"], add: ["one-too-many"] }),
+    400,
+    "bad_request",
+  );
+
+  const kept = await getMessage(env, principal, INBOX_ID, "msg_a");
+  expect(kept.labels).toHaveLength(20);
+});
+
+it("changes nothing when a batch names a message the inbox does not hold", async () => {
+  await seed({ id: "a", createdAt: 1000 });
+
+  await rejectsWith(
+    batchUpdateLabels(env, principal, INBOX_ID, {
+      message_ids: ["msg_a", "msg_missing"],
+      add: ["archived"],
+    }),
+    404,
+    "not_found",
+  );
+  await batchUpdateLabels(env, principal, INBOX_ID, {
+    message_ids: ["msg_a", "msg_missing"],
+    add: ["archived"],
+  }).catch((error: unknown) => {
+    expect((error as AppError).message).toContain("msg_missing");
+  });
+  await rejectsWith(
+    batchDeleteMessages(env, principal, INBOX_ID, { message_ids: ["msg_a", "msg_missing"] }),
+    404,
+    "not_found",
+  );
+
+  const kept = await getMessage(env, principal, INBOX_ID, "msg_a");
+  expect(kept.labels).toEqual(["received", "unread"]);
+});
+
+it("batch deletes messages, their objects, and threads left empty", async () => {
+  const attachments = await ingestInbound(env, {
+    envelopeFrom: "carol@example.com",
+    envelopeTo: INBOX_ID,
+    raw: bytes(htmlAttachmentEml),
+  });
+  const first = await deliver(plainEml);
+  const second = await deliver(replyEml);
+  expect(second.threadId).toBe(first.threadId);
+
+  const removed = await batchDeleteMessages(env, principal, INBOX_ID, {
+    message_ids: [attachments.messageId, first.messageId, first.messageId],
+  });
+  expect(removed).toEqual({ deleted: 2 });
+
+  expect(await env.BUCKET.head(`raw/${attachments.messageId}.eml`)).toBeNull();
+  expect(await env.BUCKET.head(`att/${attachments.messageId}/0`)).toBeNull();
+  expect(await env.BUCKET.head(`att/${attachments.messageId}/1`)).toBeNull();
+  expect(await env.BUCKET.head(`raw/${first.messageId}.eml`)).toBeNull();
+  expect(await env.BUCKET.head(`raw/${second.messageId}.eml`)).not.toBeNull();
+
+  expect(await getThread(env.DB, INBOX_ID, attachments.threadId)).toBeNull();
+  const survivor = await getThread(env.DB, INBOX_ID, first.threadId);
+  expect(survivor?.message_count).toBe(1);
+  await rejectsWith(getMessage(env, principal, INBOX_ID, first.messageId), 404, "not_found");
+  expect((await getMessage(env, principal, INBOX_ID, second.messageId)).message_id).toBe(
+    second.messageId,
+  );
+});
+
+it("relabels and deletes a full batch of the maximum size", async () => {
+  const threadIds = ["thr_bulk_0", "thr_bulk_1", "thr_bulk_2", "thr_bulk_3"];
+  for (const threadId of threadIds) {
+    await insertThread(env.DB, {
+      threadId,
+      inboxId: INBOX_ID,
+      subject: "Bulk",
+      lastMessageAt: 1000,
+      participantsJson: "[]",
+    });
+  }
+  const messageIds: string[] = [];
+  for (let index = 0; index < 100; index += 1) {
+    const threadId = threadIds[index % threadIds.length] as string;
+    messageIds.push(await seed({ id: `bulk_${index}`, createdAt: 1000 + index, threadId }));
+  }
+  const survivor = await seed({ id: "bulk_survivor", createdAt: 2000, threadId: threadIds[0] });
+
+  const updated = await batchUpdateLabels(env, principal, INBOX_ID, {
+    message_ids: messageIds,
+    add: ["archived"],
+    remove: ["unread"],
+  });
+  expect(updated.items).toHaveLength(100);
+  for (const message of updated.items) {
+    expect(message.labels).toEqual(["received", "archived"]);
+  }
+  expect((await getMessage(env, principal, INBOX_ID, survivor)).labels).toEqual([
+    "received",
+    "unread",
+  ]);
+
+  await rejectsWith(
+    batchDeleteMessages(env, principal, INBOX_ID, {
+      message_ids: [...messageIds, "msg_bulk_extra"],
+    }),
+    400,
+    "bad_request",
+  );
+
+  const removed = await batchDeleteMessages(env, principal, INBOX_ID, {
+    message_ids: messageIds,
+  });
+  expect(removed).toEqual({ deleted: 100 });
+  expect((await getThread(env.DB, INBOX_ID, threadIds[0] as string))?.message_count).toBe(1);
+  for (const threadId of threadIds.slice(1)) {
+    expect(await getThread(env.DB, INBOX_ID, threadId)).toBeNull();
+  }
+  const remaining = await listMessages(env, principal, INBOX_ID, { limit: 100 });
+  expect(remaining.items.map((message) => message.message_id)).toEqual([survivor]);
 });
 
 it("returns immediately when a message already exists after since", async () => {

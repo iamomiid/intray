@@ -4,15 +4,19 @@ import { insertAccount } from "../src/db/accounts";
 import { insertInbox } from "../src/db/inboxes";
 import {
   deleteMessage,
+  deleteMessages,
   type InsertMessageInput,
+  insertAttachment,
   insertMessage,
   listMessages,
+  listMessagesByIds,
   listThreads,
   searchMessages,
   updateMessageLabels,
+  updateMessagesLabels,
 } from "../src/db/index";
 import type { MessageRow } from "../src/db/rows";
-import { deleteThread, insertThread, touchThread } from "../src/db/threads";
+import { deleteThread, getThread, insertThread, touchThread } from "../src/db/threads";
 import { ftsMatch } from "../src/lib/fts";
 import { decodeCursor, decodeOffset, page, pageFromOffset } from "../src/lib/pagination";
 import { resetDatabase } from "./support";
@@ -25,6 +29,7 @@ interface MessageSeed {
   messageId: string;
   createdAt: number;
   labels: string[];
+  threadId?: string;
   fromAddr?: string;
   fromName?: string | null;
   to?: string[];
@@ -36,7 +41,7 @@ function seedInput(seed: MessageSeed): InsertMessageInput {
   return {
     messageId: seed.messageId,
     inboxId: INBOX_ID,
-    threadId: THREAD_ID,
+    threadId: seed.threadId ?? THREAD_ID,
     direction: "inbound",
     rfcMessageId: `${seed.messageId}@example.com`,
     inReplyTo: null,
@@ -360,4 +365,97 @@ it("orders threads by last activity descending", async () => {
   expect(threads.map((row) => row.thread_id)).toEqual(["thr_older", THREAD_ID, "thr_newer"]);
   expect(threads[0]?.message_count).toBe(1);
   expect(threads[0]?.participants_json).toBe(JSON.stringify(["alice@example.com"]));
+});
+
+it("reads a set of message ids and relabels them in one batch", async () => {
+  await insertMessage(
+    env.DB,
+    seedInput({ messageId: "msg_a", createdAt: 1000, labels: ["received", "unread"] }),
+  );
+  await insertMessage(
+    env.DB,
+    seedInput({ messageId: "msg_b", createdAt: 2000, labels: ["received", "unread"] }),
+  );
+
+  const found = await listMessagesByIds(env.DB, INBOX_ID, ["msg_b", "msg_a", "msg_missing"]);
+  expect(found.map((row) => row.message_id).sort()).toEqual(["msg_a", "msg_b"]);
+  expect(await listMessagesByIds(env.DB, INBOX_ID, [])).toEqual([]);
+  expect(await listMessagesByIds(env.DB, "other@intray.example", ["msg_a"])).toEqual([]);
+
+  await updateMessagesLabels(env.DB, INBOX_ID, [
+    { messageId: "msg_a", labelsJson: JSON.stringify(["received", "archived"]) },
+    { messageId: "msg_b", labelsJson: JSON.stringify(["received", "flagged"]) },
+  ]);
+
+  const relabeled = await listMessagesByIds(env.DB, INBOX_ID, ["msg_a", "msg_b"]);
+  expect(relabeled.map((row) => row.labels_json).sort()).toEqual([
+    JSON.stringify(["received", "archived"]),
+    JSON.stringify(["received", "flagged"]),
+  ]);
+});
+
+it("batch deletes messages, dropping emptied threads and recounting the rest", async () => {
+  await insertThread(env.DB, {
+    threadId: "thr_solo",
+    inboxId: INBOX_ID,
+    subject: "Solo",
+    lastMessageAt: 3000,
+    participantsJson: "[]",
+  });
+  for (const seed of [
+    { messageId: "msg_a", createdAt: 1000, threadId: THREAD_ID },
+    { messageId: "msg_b", createdAt: 2000, threadId: THREAD_ID },
+    { messageId: "msg_c", createdAt: 3000, threadId: "thr_solo" },
+  ]) {
+    await insertMessage(env.DB, seedInput({ ...seed, labels: ["received"] }));
+    await touchThread(env.DB, seed.threadId, {
+      lastMessageAt: seed.createdAt,
+      participantsJson: "[]",
+    });
+  }
+  await insertAttachment(env.DB, {
+    attachmentId: "att_a",
+    messageId: "msg_a",
+    filename: "note.txt",
+    contentType: "text/plain",
+    size: 12,
+    r2Key: "att/msg_a/0",
+    inline: 0,
+    contentId: null,
+  });
+
+  const rows = await listMessagesByIds(env.DB, INBOX_ID, ["msg_a", "msg_c"]);
+  const removed = await deleteMessages(env.DB, INBOX_ID, rows);
+
+  expect(removed.rawKeys.sort()).toEqual(["raw/msg_a.eml", "raw/msg_c.eml"]);
+  expect(removed.attachmentKeys).toEqual(["att/msg_a/0"]);
+  expect(await getThread(env.DB, INBOX_ID, "thr_solo")).toBeNull();
+  expect((await getThread(env.DB, INBOX_ID, THREAD_ID))?.message_count).toBe(1);
+
+  const remaining = await listMessages(env.DB, INBOX_ID, {}, { limit: 25 });
+  expect(remaining.map((row) => row.message_id)).toEqual(["msg_b"]);
+  expect(await deleteMessages(env.DB, INBOX_ID, [])).toEqual({ rawKeys: [], attachmentKeys: [] });
+});
+
+it("deletes a thread with its messages and returns their objects", async () => {
+  await insertMessage(
+    env.DB,
+    seedInput({ messageId: "msg_a", createdAt: 1000, labels: ["received"] }),
+  );
+  await insertAttachment(env.DB, {
+    attachmentId: "att_a",
+    messageId: "msg_a",
+    filename: "note.txt",
+    contentType: "text/plain",
+    size: 12,
+    r2Key: "att/msg_a/0",
+    inline: 0,
+    contentId: null,
+  });
+
+  const removed = await deleteThread(env.DB, INBOX_ID, THREAD_ID);
+  expect(removed).toEqual({ rawKeys: ["raw/msg_a.eml"], attachmentKeys: ["att/msg_a/0"] });
+  expect(await getThread(env.DB, INBOX_ID, THREAD_ID)).toBeNull();
+  expect(await listMessagesByIds(env.DB, INBOX_ID, ["msg_a"])).toEqual([]);
+  expect(await deleteThread(env.DB, INBOX_ID, THREAD_ID)).toBeNull();
 });

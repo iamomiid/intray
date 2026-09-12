@@ -6,6 +6,7 @@ import { sha256Hex } from "../src/lib/hash";
 import { now } from "../src/lib/time";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
+import replyEml from "./fixtures/reply.eml?raw";
 import { resetDatabase } from "./support";
 
 const EMAIL = "human@agents.test";
@@ -278,6 +279,108 @@ it("lists threads and returns one with its messages", async () => {
 
   const unknown = await SELF.fetch(url(`${base}/threads/thr_missing`), { headers: auth });
   expect(unknown.status).toBe(404);
+});
+
+it("batch relabels and batch deletes messages over HTTP", async () => {
+  const account = await signupOver(EMAIL);
+  const auth = { authorization: `Bearer ${account.api_key}` };
+  const base = `/v1/inboxes/${encodeURIComponent(account.inbox_id)}`;
+  const first = await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: account.inbox_id,
+    raw: bytes(plainEml),
+  });
+  const second = await ingestInbound(env, {
+    envelopeFrom: "carol@example.com",
+    envelopeTo: account.inbox_id,
+    raw: bytes(htmlAttachmentEml),
+  });
+
+  const relabeled = await SELF.fetch(url(`${base}/messages/labels`), {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({
+      message_ids: [second.messageId, first.messageId],
+      add: ["archived"],
+      remove: ["unread"],
+    }),
+  });
+  expect(relabeled.status).toBe(200);
+  const relabeledPage = await relabeled.json<MessagePage>();
+  expect(relabeledPage.items.map((item) => item.message_id)).toEqual([
+    second.messageId,
+    first.messageId,
+  ]);
+  expect(relabeledPage.items[0]?.labels).toEqual(["received", "archived"]);
+
+  const rejected = await SELF.fetch(url(`${base}/messages/labels`), {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ message_ids: [first.messageId] }),
+  });
+  expect(rejected.status).toBe(400);
+  expect((await rejected.json<ErrorResponse>()).error.code).toBe("bad_request");
+
+  const missing = await SELF.fetch(url(`${base}/messages/delete`), {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ message_ids: [first.messageId, "msg_missing"] }),
+  });
+  expect(missing.status).toBe(404);
+  expect((await missing.json<ErrorResponse>()).error.message).toContain("msg_missing");
+
+  const removed = await SELF.fetch(url(`${base}/messages/delete`), {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({ message_ids: [first.messageId, second.messageId] }),
+  });
+  expect(removed.status).toBe(200);
+  await expect(removed.json()).resolves.toEqual({ deleted: 2 });
+
+  const listed = await SELF.fetch(url(`${base}/messages`), { headers: auth });
+  expect((await listed.json<MessagePage>()).items).toHaveLength(0);
+  const threads = await SELF.fetch(url(`${base}/threads`), { headers: auth });
+  expect((await threads.json<ThreadPage>()).items).toHaveLength(0);
+});
+
+it("archives and deletes a thread over HTTP", async () => {
+  const account = await signupOver(EMAIL);
+  const auth = { authorization: `Bearer ${account.api_key}` };
+  const base = `/v1/inboxes/${encodeURIComponent(account.inbox_id)}`;
+  const first = await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: account.inbox_id,
+    raw: bytes(plainEml),
+  });
+  await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: account.inbox_id,
+    raw: bytes(replyEml),
+  });
+
+  const archived = await SELF.fetch(url(`${base}/threads/${first.threadId}`), {
+    method: "PATCH",
+    headers: auth,
+    body: JSON.stringify({ add: ["archived"], remove: ["unread"] }),
+  });
+  expect(archived.status).toBe(200);
+  const detail = await archived.json<ThreadResponse>();
+  expect(detail.messages).toHaveLength(2);
+  for (const message of detail.messages ?? []) {
+    expect(message.labels).toEqual(["received", "archived"]);
+  }
+
+  const removed = await SELF.fetch(url(`${base}/threads/${first.threadId}`), {
+    method: "DELETE",
+    headers: auth,
+  });
+  expect(removed.status).toBe(200);
+  await expect(removed.json()).resolves.toEqual({ deleted: true });
+
+  const gone = await SELF.fetch(url(`${base}/threads/${first.threadId}`), { headers: auth });
+  expect(gone.status).toBe(404);
+  const listed = await SELF.fetch(url(`${base}/messages`), { headers: auth });
+  expect((await listed.json<MessagePage>()).items).toHaveLength(0);
 });
 
 it("returns an empty page from wait after the timeout elapses", async () => {

@@ -62,13 +62,13 @@ export async function listAttachmentsForMessages(
   if (messageIds.length === 0) {
     return [];
   }
-  const placeholders = messageIds.map(() => "?").join(", ");
   const result = await db
     .prepare(
-      `SELECT ${COLUMNS} FROM attachments WHERE message_id IN (${placeholders})
+      `SELECT ${COLUMNS} FROM attachments
+       WHERE message_id IN (SELECT value FROM json_each(?))
        ORDER BY message_id ASC, rowid ASC`,
     )
-    .bind(...messageIds)
+    .bind(JSON.stringify(messageIds))
     .all<AttachmentRow>();
   return result.results;
 }

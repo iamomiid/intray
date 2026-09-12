@@ -3,10 +3,13 @@ import { z } from "zod";
 import skillMd from "../../public/skill.md";
 import {
   authenticate,
+  batchDeleteMessages,
+  batchUpdateLabels,
   createApiKey,
   createInbox,
   deleteInbox,
   deleteMessage,
+  deleteThread,
   forwardMessage,
   getAttachment,
   getInbox,
@@ -21,6 +24,7 @@ import {
   sendMessage,
   signup,
   updateMessageLabels,
+  updateThreadLabels,
   verify,
   waitForMessage,
 } from "../core/index";
@@ -34,6 +38,10 @@ const TEXT_BODY_MAX_BYTES = 64 * 1024;
 const inboxId = z.string().min(1);
 
 const messageId = z.string().min(1);
+
+const threadId = z.string().min(1);
+
+const labels = z.array(z.string());
 
 const recipients = z.union([z.string(), z.array(z.string())]);
 
@@ -213,9 +221,35 @@ function registerThreadTools(server: McpServer, env: Env, principal: Principal):
     {
       title: "Get thread",
       description: "Fetch one thread with its messages ordered by created_at.",
-      inputSchema: z.object({ inbox_id: inboxId, thread_id: z.string().min(1) }),
+      inputSchema: z.object({ inbox_id: inboxId, thread_id: threadId }),
     },
     (args) => run(() => getThread(env, principal, args.inbox_id, args.thread_id)),
+  );
+
+  server.registerTool(
+    "update_thread_labels",
+    {
+      title: "Update thread labels",
+      description:
+        'Add and remove labels across every message in a thread. Archive a thread with add ["archived"] and remove ["unread"]. Returns the thread with its messages.',
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        thread_id: threadId,
+        add: labels.optional(),
+        remove: labels.optional(),
+      }),
+    },
+    (args) => run(() => updateThreadLabels(env, principal, args.inbox_id, args.thread_id, args)),
+  );
+
+  server.registerTool(
+    "delete_thread",
+    {
+      title: "Delete thread",
+      description: "Delete a thread with every message under it and their stored objects.",
+      inputSchema: z.object({ inbox_id: inboxId, thread_id: threadId }),
+    },
+    (args) => run(() => deleteThread(env, principal, args.inbox_id, args.thread_id)),
   );
 }
 
@@ -304,6 +338,33 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
       inputSchema: z.object({ inbox_id: inboxId, message_id: messageId }),
     },
     (args) => run(() => deleteMessage(env, principal, args.inbox_id, args.message_id)),
+  );
+
+  server.registerTool(
+    "batch_update_labels",
+    {
+      title: "Batch update labels",
+      description:
+        "Add and remove labels across up to 100 messages in one call. Returns the updated messages in the order given. Every id must belong to the inbox; one that does not fails the whole call and changes nothing.",
+      inputSchema: z.object({
+        inbox_id: inboxId,
+        message_ids: z.array(messageId),
+        add: labels.optional(),
+        remove: labels.optional(),
+      }),
+    },
+    (args) => run(() => batchUpdateLabels(env, principal, args.inbox_id, args)),
+  );
+
+  server.registerTool(
+    "batch_delete_messages",
+    {
+      title: "Batch delete messages",
+      description:
+        "Delete up to 100 messages and their stored objects in one call, dropping threads left empty. Every id must belong to the inbox; one that does not fails the whole call and changes nothing.",
+      inputSchema: z.object({ inbox_id: inboxId, message_ids: z.array(messageId) }),
+    },
+    (args) => run(() => batchDeleteMessages(env, principal, args.inbox_id, args)),
   );
 
   server.registerTool(

@@ -17,10 +17,9 @@ import {
 import { AppError, badRequest, conflict, notFound } from "../lib/errors";
 import { clampLimit, decodeCursor, type Page, page } from "../lib/pagination";
 import { now } from "../lib/time";
+import { deleteObjects } from "./objects";
 import type { Principal } from "./principal";
 import { type InboxObject, toInbox } from "./serialize";
-
-const R2_DELETE_CHUNK = 1000;
 
 export interface CreateInboxInput {
   username?: string | null;
@@ -63,12 +62,6 @@ function resolveUsername(requested: string | null): string {
     throw badRequest("username reserved");
   }
   return username;
-}
-
-async function deleteObjects(env: Env, keys: string[]): Promise<void> {
-  for (let index = 0; index < keys.length; index += R2_DELETE_CHUNK) {
-    await env.BUCKET.delete(keys.slice(index, index + R2_DELETE_CHUNK));
-  }
 }
 
 export async function createInbox(

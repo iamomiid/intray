@@ -107,7 +107,7 @@ looks it up by hash among the unrevoked, activated rows, loads the account, and 
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, eighteen with one.
+registered depends on the result: three onboarding tools without a live key, twenty-two with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -184,6 +184,12 @@ twice, so implementing them per adapter would let validation, error codes and se
 throws `AppError`; HTTP maps it to `{error:{code,message}}` with a status and MCP maps it to a tool
 error. No file under `src/http` or `src/mcp` touches a D1, R2 or EMAIL binding for anything but
 passing `env` through.
+
+**A request that writes more than one row does it in one `db.batch([...])`.** D1 runs a batch as a
+single transaction, so a batch label change, a batch delete, and a thread or message delete with its
+attachments either land whole or not at all. The reads that decide what to write, including the
+`IN` list that checks every id belongs to the inbox, run first and outside the batch; a request
+whose check fails throws before a single statement is queued.
 
 **`*_json` columns are parsed in `src/core/serialize.ts` and nowhere else**, and every `src/db`
 function takes `db: D1Database` first, binds every parameter, and returns rows whose fields are the

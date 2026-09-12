@@ -1,5 +1,9 @@
 import { Hono } from "hono";
 import {
+  type BatchDeleteBody,
+  type BatchLabelsBody,
+  batchDeleteMessages,
+  batchUpdateLabels,
   deleteMessage,
   forwardMessage,
   getMessage,
@@ -44,6 +48,18 @@ messageRoutes.get("/inboxes/:inbox_id/messages/wait", async (c) => {
 messageRoutes.post("/inboxes/:inbox_id/messages/send", async (c) => {
   const body = await readJson<SendMessageBody>(c);
   return c.json(await sendMessage(c.env, c.get("principal"), c.req.param("inbox_id"), body), 201);
+});
+
+messageRoutes.post("/inboxes/:inbox_id/messages/labels", async (c) => {
+  const body = await readJson<BatchLabelsBody>(c);
+  return c.json(await batchUpdateLabels(c.env, c.get("principal"), c.req.param("inbox_id"), body));
+});
+
+messageRoutes.post("/inboxes/:inbox_id/messages/delete", async (c) => {
+  const body = await readJson<BatchDeleteBody>(c);
+  return c.json(
+    await batchDeleteMessages(c.env, c.get("principal"), c.req.param("inbox_id"), body),
+  );
 });
 
 messageRoutes.get("/inboxes/:inbox_id/messages/:message_id", async (c) => {

@@ -5,13 +5,16 @@ import {
 } from "../db/attachments";
 import {
   deleteMessage as deleteMessageRow,
+  deleteMessages as deleteMessageRows,
   getMessage as getMessageRow,
   insertMessage,
   listMessages as listMessageRows,
+  listMessagesByIds,
   listMessagesByThread,
   listMessagesSince,
   searchMessages as searchMessageRows,
   updateMessageLabels as updateMessageLabelsRow,
+  updateMessagesLabels,
 } from "../db/messages";
 import type { AttachmentRow, InboxRow, MessageRow, ThreadRow } from "../db/rows";
 import {
@@ -37,12 +40,7 @@ import { splitTag, tagLabel } from "../lib/address";
 import { AppError, badRequest, notFound } from "../lib/errors";
 import { ftsMatch } from "../lib/fts";
 import { newId } from "../lib/ids";
-import {
-  LABEL_MAX_CHARS,
-  WAIT_DEFAULT_SECONDS,
-  WAIT_MAX_SECONDS,
-  WAIT_POLL_MS,
-} from "../lib/limits";
+import { WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS, WAIT_POLL_MS } from "../lib/limits";
 import {
   clampLimit,
   decodeCursor,
@@ -53,11 +51,13 @@ import {
 } from "../lib/pagination";
 import { now } from "../lib/time";
 import { requireInbox } from "./inboxes";
+import { applyLabelDelta, normalizeLabelDelta, normalizeLabels } from "./labels";
+import { deleteObjects } from "./objects";
 import { isVerified, type Principal } from "./principal";
 import { type MessageObject, parseStringArray, toMessage } from "./serialize";
 import { groupAttachments } from "./threads";
 
-const MAX_LABELS = 20;
+const MAX_BATCH_MESSAGES = 100;
 
 const WAIT_BATCH = 100;
 
@@ -103,6 +103,24 @@ export interface UpdateLabelsBody {
   labels?: unknown;
 }
 
+export interface BatchLabelsBody {
+  message_ids?: unknown;
+  add?: unknown;
+  remove?: unknown;
+}
+
+export interface BatchDeleteBody {
+  message_ids?: unknown;
+}
+
+export interface MessageList {
+  items: MessageObject[];
+}
+
+export interface DeletedMessages {
+  deleted: number;
+}
+
 export interface SendMessageBody {
   from?: string;
   to?: string | string[];
@@ -146,30 +164,24 @@ function normalizeFilterLabels(value: string | string[] | undefined): string[] {
   return labels;
 }
 
-function normalizeLabels(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw badRequest("labels must be an array of strings");
+function normalizeMessageIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw badRequest("message_ids must be a non-empty array of strings");
   }
-  const labels: string[] = [];
+  const ids: string[] = [];
   for (const entry of value) {
-    if (typeof entry !== "string") {
-      throw badRequest("labels must be an array of strings");
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw badRequest("message_ids must be a non-empty array of strings");
     }
     const trimmed = entry.trim();
-    if (trimmed.length === 0) {
-      throw badRequest("labels must not be empty");
-    }
-    if (trimmed.length > LABEL_MAX_CHARS) {
-      throw badRequest(`labels must be at most ${LABEL_MAX_CHARS} characters`);
-    }
-    if (!labels.includes(trimmed)) {
-      labels.push(trimmed);
+    if (!ids.includes(trimmed)) {
+      ids.push(trimmed);
     }
   }
-  if (labels.length > MAX_LABELS) {
-    throw badRequest(`at most ${MAX_LABELS} labels`);
+  if (ids.length > MAX_BATCH_MESSAGES) {
+    throw badRequest(`at most ${MAX_BATCH_MESSAGES} message_ids`);
   }
-  return labels;
+  return ids;
 }
 
 function clampTimeout(value: number | string | undefined): number {
@@ -196,19 +208,35 @@ async function attachRows(env: Env, rows: MessageRow[]): Promise<MessageObject[]
   return rows.map((row) => toMessage(row, grouped.get(row.message_id) ?? []));
 }
 
-async function deleteObjects(env: Env, keys: string[]): Promise<void> {
-  if (keys.length === 0) {
-    return;
-  }
-  await env.BUCKET.delete(keys);
-}
-
 async function requireMessage(env: Env, inbox: InboxRow, messageId: string): Promise<MessageRow> {
   const row = await getMessageRow(env.DB, inbox.inbox_id, messageId);
   if (row === null) {
     throw notFound("message not found");
   }
   return row;
+}
+
+async function requireMessages(
+  env: Env,
+  inbox: InboxRow,
+  messageIds: string[],
+): Promise<MessageRow[]> {
+  const rows = await listMessagesByIds(env.DB, inbox.inbox_id, messageIds);
+  const byId = new Map(rows.map((row) => [row.message_id, row]));
+  const ordered: MessageRow[] = [];
+  const missing: string[] = [];
+  for (const messageId of messageIds) {
+    const row = byId.get(messageId);
+    if (row === undefined) {
+      missing.push(messageId);
+      continue;
+    }
+    ordered.push(row);
+  }
+  if (missing.length > 0) {
+    throw notFound(`messages not found: ${missing.join(", ")}`);
+  }
+  return ordered;
 }
 
 export async function listMessages(
@@ -360,6 +388,42 @@ export async function deleteMessage(
   }
   await recountThread(env.DB, row.thread_id);
   return { deleted: true };
+}
+
+export async function batchUpdateLabels(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  body: BatchLabelsBody,
+): Promise<MessageList> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const messageIds = normalizeMessageIds(body.message_ids);
+  const delta = normalizeLabelDelta(body.add, body.remove);
+  const rows = await requireMessages(env, inbox, messageIds);
+  await updateMessagesLabels(
+    env.DB,
+    inbox.inbox_id,
+    rows.map((row) => ({
+      messageId: row.message_id,
+      labelsJson: JSON.stringify(applyLabelDelta(parseStringArray(row.labels_json), delta)),
+    })),
+  );
+  const updated = await attachRows(env, await requireMessages(env, inbox, messageIds));
+  return { items: updated };
+}
+
+export async function batchDeleteMessages(
+  env: Env,
+  principal: Principal,
+  inboxId: string,
+  body: BatchDeleteBody,
+): Promise<DeletedMessages> {
+  const inbox = await requireInbox(env, principal, inboxId);
+  const messageIds = normalizeMessageIds(body.message_ids);
+  const rows = await requireMessages(env, inbox, messageIds);
+  const removed = await deleteMessageRows(env.DB, inbox.inbox_id, rows);
+  await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys]);
+  return { deleted: rows.length };
 }
 
 function mergeParticipants(existing: string[], added: string[]): string[] {
