@@ -121,7 +121,18 @@ shape), `reply_to`, `subject`, `text`, `html`, `preview`, `labels`, `size`, `has
 
 ### attachment
 
-`attachment_id`, `message_id`, `filename`, `content_type`, `size`, `inline`, `content_id`.
+`attachment_id`, `message_id`, `filename`, `content_type`, `size`, `inline`, `content_id`,
+`text_status`.
+
+`text_status` is one of `none` (not a type text is extracted from), `extracted`, `empty` (a
+supported type with no text in it), `too_large` (over 10 MiB), or `failed` (the file could not be
+parsed). Text is extracted on ingest from PDF (`application/pdf` or a `.pdf` filename) and docx
+(`application/vnd.openxmlformats-officedocument.wordprocessingml.document` or a `.docx` filename);
+the extracted text is capped at 256 KiB of UTF-8. Outbound attachments are never extracted and are
+always `none`.
+
+The attachment objects embedded on a message carry `text_status` and never the text itself, so
+message lists stay small. The text is read through the attachment text endpoint or `get_attachment`.
 
 ## REST endpoints
 
@@ -280,6 +291,7 @@ The outbound row is stored with `rfc_message_id` set to the `messageId` returned
 | Method | Path | Returns |
 | --- | --- | --- |
 | GET | `/inboxes/:inbox_id/messages/:message_id/attachments/:attachment_id` | attachment bytes with its `content_type` and a `content-disposition` filename |
+| GET | `/inboxes/:inbox_id/messages/:message_id/attachments/:attachment_id/text` | the extracted text as `text/plain; charset=utf-8`, `404 not_found` when `text_status` is not `extracted` |
 
 ### Service endpoints
 
@@ -347,8 +359,9 @@ Differences from REST, all deliberate:
   yet.
 - `read_onboarding_docs` returns `{"markdown": ...}`, the content of `/skill.md`.
 - `get_attachment` returns the attachment object plus `download_url` (the authenticated REST
-  download path under `PUBLIC_URL`) and, when `content_type` is `text/*` and `size` is at most
-  64 KiB, the decoded body as `text`.
+  download path under `PUBLIC_URL`) and, where there is one, a `text`: the text extracted from a
+  PDF or docx on ingest, otherwise the decoded body when `content_type` is `text/*` and `size` is
+  at most 64 KiB. `text_status` says why `text` is absent.
 - `labels` on `list_messages` accepts a string or an array; `since`, `before`, `limit`, and
   `timeout` are numbers.
 - `send_message` has no `headers` argument.

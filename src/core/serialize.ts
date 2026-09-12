@@ -55,6 +55,11 @@ export interface AttachmentObject {
   size: number;
   inline: boolean;
   content_id: string | null;
+  text_status: string;
+}
+
+export interface AttachmentDetailObject extends AttachmentObject {
+  text: string | null;
 }
 
 export interface MessageObject {
@@ -175,7 +180,12 @@ export function toAttachment(row: AttachmentRow): AttachmentObject {
     size: row.size,
     inline: row.inline !== 0,
     content_id: row.content_id,
+    text_status: row.text_status,
   };
+}
+
+export function toAttachmentDetail(row: AttachmentRow): AttachmentDetailObject {
+  return { ...toAttachment(row), text: row.text };
 }
 
 export function toMessage(row: MessageRow, attachments: AttachmentRow[]): MessageObject {

@@ -15,3 +15,7 @@ export const WAIT_POLL_MS = 2000;
 export const PREVIEW_CHARS = 200;
 
 export const LABEL_MAX_CHARS = 64;
+
+export const ATTACHMENT_TEXT_MAX_INPUT_BYTES = 10 * 1024 * 1024;
+
+export const ATTACHMENT_TEXT_MAX_BYTES = 256 * 1024;

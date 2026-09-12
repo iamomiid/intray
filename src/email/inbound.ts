@@ -1,3 +1,4 @@
+import { type ExtractableAttachment, storeAttachmentText } from "../core/attachments";
 import { parseStringArray } from "../core/serialize";
 import { insertAttachment } from "../db/attachments";
 import { getInbox } from "../db/inboxes";
@@ -144,8 +145,9 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     createdAt,
   });
 
+  const extractable: ExtractableAttachment[] = [];
   for (const { attachment, key } of stored) {
-    await insertAttachment(env.DB, {
+    const row = await insertAttachment(env.DB, {
       attachmentId: newId("att"),
       messageId,
       filename: attachment.filename,
@@ -155,7 +157,15 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
       inline: attachment.disposition === "inline" ? 1 : 0,
       contentId: attachment.contentId,
     });
+    extractable.push({
+      attachmentId: row.attachment_id,
+      filename: row.filename,
+      contentType: row.content_type,
+      content: attachment.content,
+    });
   }
+
+  await storeAttachmentText(env.DB, extractable);
 
   await touchThread(env.DB, threadId, {
     lastMessageAt: createdAt,

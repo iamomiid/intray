@@ -27,9 +27,11 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "0.22.0",
+    "fflate": "0.8.3",
     "hono": "4.13.7",
     "postal-mime": "3.0.0",
     "ulid": "3.0.2",
+    "unpdf": "1.8.1",
     "zod": "4.5.4"
   },
   "devDependencies": {
