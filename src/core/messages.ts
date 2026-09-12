@@ -328,7 +328,7 @@ export async function waitForMessage(
     return { items: await attachRows(env, existing), next_page_token: null };
   }
 
-  const notified = await waitForInbox(env, inbox.inbox_id, deadline - now());
+  const notified = await waitForInbox(env, inbox.inbox_id, deadline - now(), since);
   if (notified === null) {
     return pollForMessages(env, inbox.inbox_id, since, deadline, pollMs);
   }

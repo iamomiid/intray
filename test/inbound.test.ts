@@ -243,7 +243,7 @@ it("wakes a waiter on the inbox object once the message is stored", async () => 
     throw new Error("INBOX_WAITER is not bound");
   }
   const stub = namespace.get(namespace.idFromName(INBOX_ID));
-  const pending = stub.wait(10_000);
+  const pending = stub.wait(10_000, Date.now());
   await sleep(50);
   await ingestInbound(env, {
     envelopeFrom: "alice@example.com",

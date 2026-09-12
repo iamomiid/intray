@@ -109,12 +109,28 @@ function unavailableWaiter(): DurableObjectNamespace<InboxWaiter> {
   } as unknown as DurableObjectNamespace<InboxWaiter>;
 }
 
-function waiterStub(): DurableObjectStub<InboxWaiter> {
+function recordingWaiter(
+  seen: number[],
+  beforeResolve: () => Promise<void>,
+): DurableObjectNamespace<InboxWaiter> {
+  return {
+    idFromName: () => ({}),
+    get: () => ({
+      wait: async (_timeoutMs: number, since: number) => {
+        seen.push(since);
+        await beforeResolve();
+        return true;
+      },
+    }),
+  } as unknown as DurableObjectNamespace<InboxWaiter>;
+}
+
+function waiterStub(name: string): DurableObjectStub<InboxWaiter> {
   const namespace = env.INBOX_WAITER;
   if (namespace === undefined) {
     throw new Error("INBOX_WAITER is not bound");
   }
-  return namespace.get(namespace.idFromName("waiter@intray.example"));
+  return namespace.get(namespace.idFromName(name));
 }
 
 async function seedInbox(): Promise<Principal> {
@@ -678,10 +694,10 @@ it("polls when the waiter rejects the call", async () => {
 });
 
 it("resolves every pending wait on the waiter object when notified", async () => {
-  const stub = waiterStub();
+  const stub = waiterStub("notify-all@intray.example");
   const woken = await runInDurableObject<InboxWaiter, boolean[]>(stub, (waiter) => {
-    const first = waiter.wait(10_000);
-    const second = waiter.wait(10_000);
+    const first = waiter.wait(10_000, Date.now());
+    const second = waiter.wait(10_000, Date.now());
     expect(waiter.waiting).toBe(2);
     waiter.notify(Date.now());
     return Promise.all([first, second]);
@@ -694,13 +710,64 @@ it("resolves every pending wait on the waiter object when notified", async () =>
 });
 
 it("resolves a waiter object wait as false on timeout and keeps no timer", async () => {
-  const stub = waiterStub();
-  const woken = await runInDurableObject<InboxWaiter, boolean>(stub, (waiter) => waiter.wait(50));
+  const stub = waiterStub("timeout@intray.example");
+  const woken = await runInDurableObject<InboxWaiter, boolean>(stub, (waiter) =>
+    waiter.wait(50, Date.now()),
+  );
 
   expect(woken).toBe(false);
   await runInDurableObject<InboxWaiter, void>(stub, (waiter) => {
     expect(waiter.waiting).toBe(0);
   });
+});
+
+it("resolves a wait immediately when the waiter was notified after since", async () => {
+  const stub = waiterStub("remembered@intray.example");
+  const outcome = await runInDurableObject<InboxWaiter, { woken: boolean; waiting: number }>(
+    stub,
+    async (waiter) => {
+      waiter.notify(2000);
+      const woken = await waiter.wait(30_000, 1000);
+      return { woken, waiting: waiter.waiting };
+    },
+  );
+
+  expect(outcome).toEqual({ woken: true, waiting: 0 });
+});
+
+it("parks a wait whose since is newer than the remembered notify", async () => {
+  const stub = waiterStub("stale-notify@intray.example");
+  const woken = await runInDurableObject<InboxWaiter, boolean>(stub, (waiter) => {
+    waiter.notify(1000);
+    const pending = waiter.wait(50, 2000);
+    expect(waiter.waiting).toBe(1);
+    return pending;
+  });
+
+  expect(woken).toBe(false);
+});
+
+it("passes since to the waiter and requeries after an immediate resolution", async () => {
+  const principal = await seedInbox();
+  const since = 5000;
+  const seen: number[] = [];
+  const started = Date.now();
+  const waited = await waitForMessage(
+    {
+      ...env,
+      INBOX_WAITER: recordingWaiter(seen, async () => {
+        await seed({ id: "raced", createdAt: since + 1000 });
+      }),
+    },
+    principal,
+    INBOX_ID,
+    { since, timeout: 30 },
+    { pollMs: 30_000 },
+  );
+
+  expect(seen).toEqual([since]);
+  expect(waited.items.map((message) => message.message_id)).toEqual(["msg_raced"]);
+  expect(Date.now() - started).toBeLessThan(1000);
 });
 
 it("returns no items when the wait times out", async () => {

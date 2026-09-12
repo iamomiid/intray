@@ -9,12 +9,14 @@ interface PendingWait {
 
 export class InboxWaiter extends DurableObject {
   private readonly pending = new Set<PendingWait>();
+  private lastNotifiedAt = 0;
 
   get waiting(): number {
     return this.pending.size;
   }
 
-  notify(_createdAt: number): void {
+  notify(createdAt: number): void {
+    this.lastNotifiedAt = Math.max(this.lastNotifiedAt, createdAt);
     const woken = [...this.pending];
     this.pending.clear();
     for (const waiter of woken) {
@@ -25,7 +27,10 @@ export class InboxWaiter extends DurableObject {
     }
   }
 
-  wait(timeoutMs: number): Promise<boolean> {
+  wait(timeoutMs: number, since: number): Promise<boolean> {
+    if (this.lastNotifiedAt > since) {
+      return Promise.resolve(true);
+    }
     return new Promise<boolean>((resolve) => {
       const waiter: PendingWait = { resolve, timer: null };
       this.pending.add(waiter);
@@ -64,13 +69,14 @@ export async function waitForInbox(
   env: Env,
   inboxId: string,
   timeoutMs: number,
+  since: number,
 ): Promise<boolean | null> {
   const stub = stubFor(env, inboxId);
   if (stub === null) {
     return null;
   }
   try {
-    return await stub.wait(Math.min(Math.max(0, timeoutMs), WAIT_MAX_SECONDS * 1000));
+    return await stub.wait(Math.min(Math.max(0, timeoutMs), WAIT_MAX_SECONDS * 1000), since);
   } catch {
     return null;
   }

@@ -368,9 +368,10 @@ touches R2.
 
 **D1 for metadata, R2 for bytes; the one Durable Object per inbox holds no state.** Cross-inbox
 queries, filters and pagination stay plain SQL and rows stay small, because no message, thread or
-counter lives in an actor. `InboxWaiter` is the single exception and it stores nothing: it holds
-only the `wait_for_message` calls parked on that inbox right now, so losing an instance costs a
-wake-up rather than data, and a deployment without the binding still works.
+counter lives in an actor. `InboxWaiter` is the single exception and it persists nothing: in memory
+it holds the `wait_for_message` calls parked on that inbox right now and the newest `created_at` it
+has been notified about, so losing an instance costs a wake-up rather than data, and a deployment
+without the binding still works.
 
 **`inboxes.inbox_id` is the full lowercase address and is the primary key.** Inbound mail arrives
 with a recipient address and nothing else, so the hot path is a lookup by primary key; API paths
@@ -460,13 +461,22 @@ for up to 55 seconds and returns the first matching message or an empty result. 
 the deployment that does have somewhere to receive a push, and it costs the reading path nothing.
 
 **The wait is pushed by the ingest, and polling is the fallback.** `src/waiter.ts` defines
-`InboxWaiter`, a Durable Object reached with `idFromName(inbox_id)`, whose `wait(timeoutMs)`
+`InboxWaiter`, a Durable Object reached with `idFromName(inbox_id)`, whose `wait(timeoutMs, since)`
 resolves `true` on a notify and `false` on the timeout, and whose `notify(createdAt)` resolves every
 waiter parked on that inbox. `ingestInbound` calls `notify` once the message row is committed,
 after the webhook event and best-effort: a namespace that is missing or an RPC that throws is
 swallowed, because a wake-up is never worth failing an ingest for. A `wait` queries D1 once, parks
-on the object for the time it has left, then queries D1 a second time; the second query is what
-makes a notify that raced the first one still return the message. Without the binding, or when the
-RPC throws, the call falls back to polling D1 every 2 seconds and behaves exactly as before. The
-queue and cron paths do not notify, because a message the caller sent itself is not what `wait` is
+on the object for the time it has left, then queries D1 a second time; the second query covers a
+notify that arrives after the park ends for any other reason. Without the binding, or when the RPC
+throws, the call falls back to polling D1 every 2 seconds and behaves exactly as before. The queue
+and cron paths do not notify, because a message the caller sent itself is not what `wait` is
 waiting for.
+
+**The object remembers the newest `created_at` it was told about, so a notify cannot be missed
+between the query and the registration.** `notify` keeps the maximum `created_at` it has seen and
+`wait` resolves `true` at once, parking nothing, when that value is greater than the caller's
+`since`. Without it a notify landing after the first D1 query and before the wait is registered
+would leave the call asleep for the whole remaining timeout, up to 55 seconds, which is the latency
+the object exists to remove; the result was correct only because of the second query. The memory
+lives in the instance and is lost when the object is evicted, which is harmless: an evicted object
+has no parked waiters either, and the second D1 query still runs.
