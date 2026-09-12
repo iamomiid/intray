@@ -1,7 +1,7 @@
 import { parseAddressArray, parseStringArray } from "../core/serialize";
 import type { AttachmentRow, InboxRow, MessageRow } from "../db/rows";
 import type { Env } from "../env";
-import { isValidEmail } from "../lib/address";
+import { isValidEmail, normalizeAddress } from "../lib/address";
 import { AppError, badRequest, tooManyRequests } from "../lib/errors";
 import { base64UrlDecode } from "../lib/hash";
 import {
@@ -42,6 +42,7 @@ export interface SendInput {
 }
 
 export interface ReplyInput {
+  from?: string;
   text?: string | null;
   html?: string | null;
   reply_all?: boolean;
@@ -49,6 +50,7 @@ export interface ReplyInput {
 }
 
 export interface ForwardInput {
+  from?: string;
   to?: string | string[];
   cc?: string | string[];
   bcc?: string | string[];
@@ -327,11 +329,15 @@ function replyReferences(parent: MessageRow): string[] {
 }
 
 function withoutSelf(addresses: string[], self: string): string[] {
-  const lowered = self.toLowerCase();
-  return addresses.filter((address) => address.toLowerCase() !== lowered);
+  return addresses.filter((address) => normalizeAddress(address) !== self);
 }
 
-export function buildReply(parent: MessageRow, inbox: InboxRow, body: ReplyInput): BuiltMessage {
+export function buildReply(
+  parent: MessageRow,
+  inbox: InboxRow,
+  body: ReplyInput,
+  from: OutboundSender,
+): BuiltMessage {
   const direct = parent.reply_to === null ? parent.from_addr : parent.reply_to;
   const candidates = [direct];
   if (body.reply_all === true) {
@@ -353,7 +359,7 @@ export function buildReply(parent: MessageRow, inbox: InboxRow, body: ReplyInput
   }
 
   return compose({
-    from: { name: inbox.display_name, email: inbox.inbox_id },
+    from,
     to,
     subject: replySubject(parent.subject),
     text: body.text ?? null,
@@ -393,8 +399,8 @@ export async function buildForward(
   env: Env,
   parent: MessageRow,
   parentAttachments: AttachmentRow[],
-  inbox: InboxRow,
   body: ForwardInput,
+  from: OutboundSender,
 ): Promise<BuiltMessage> {
   const attachments: DecodedAttachment[] = [];
   for (const row of parentAttachments) {
@@ -410,7 +416,7 @@ export async function buildForward(
   }
 
   return compose({
-    from: { name: inbox.display_name, email: inbox.inbox_id },
+    from,
     to: body.to,
     cc: body.cc,
     bcc: body.bcc,

@@ -1,8 +1,14 @@
 import { badRequest } from "./errors";
+import { LABEL_MAX_CHARS } from "./limits";
 
 export interface ParsedAddress {
   address: string;
   name: string | null;
+}
+
+export interface TaggedAddress {
+  address: string;
+  tag: string | null;
 }
 
 export interface AddressParts {
@@ -83,17 +89,35 @@ export function parseAddress(raw: string): ParsedAddress {
   return { address: trimmed, name: null };
 }
 
-export function normalizeAddress(addr: string): string {
+export function splitTag(addr: string): TaggedAddress {
   const lowered = addr.trim().toLowerCase();
   const at = lowered.lastIndexOf("@");
   if (at === -1) {
-    return lowered;
+    return { address: lowered, tag: null };
   }
   const local = lowered.slice(0, at);
   const domain = lowered.slice(at + 1);
   const plus = local.indexOf("+");
-  const base = plus === -1 ? local : local.slice(0, plus);
-  return `${base}@${domain}`;
+  if (plus === -1) {
+    return { address: lowered, tag: null };
+  }
+  const tag = local.slice(plus + 1);
+  return { address: `${local.slice(0, plus)}@${domain}`, tag: tag.length === 0 ? null : tag };
+}
+
+export function normalizeAddress(addr: string): string {
+  return splitTag(addr).address;
+}
+
+export function tagLabel(tag: string | null): string | null {
+  if (tag === null) {
+    return null;
+  }
+  const trimmed = tag.trim();
+  if (trimmed.length === 0 || trimmed.length > LABEL_MAX_CHARS) {
+    return null;
+  }
+  return trimmed;
 }
 
 export function isValidEmail(addr: string): boolean {

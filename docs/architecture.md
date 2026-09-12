@@ -35,15 +35,17 @@ secret. `src/env.ts` turns those into a `Config`.
 and calls `ingestInbound(env, {envelopeFrom, envelopeTo, raw})`, which runs:
 
 1. reject when `raw.byteLength` exceeds `INBOUND_MAX_BYTES` (`552 message too large`);
-2. `normalizeAddress(envelopeTo)` then `getInbox`, rejecting an unknown recipient
-   (`550 no such inbox`); normalization strips `+tag`, so tagged addresses land in the base inbox;
+2. `splitTag(envelopeTo)` then `getInbox` on the base address, rejecting an unknown recipient
+   (`550 no such inbox`); the `+tag` is stripped for the lookup, so tagged addresses land in the
+   base inbox, and it is kept for step 6;
 3. `parseMime(raw)` through `postal-mime`, yielding a `ParsedEmail` with bare RFC identifiers and a
    `preview` derived from the text body, or from tag-stripped html when there is none;
 4. `BUCKET.put("raw/{message_id}.eml")` and `BUCKET.put("att/{message_id}/{n}")` per attachment;
 5. `resolveThreadId` matching `[inReplyTo, ...references]` against `messages.rfc_message_id` in the
    same inbox, else a new `thr_` row whose subject and participants come from this message;
-6. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]`, `size`,
-   `has_attachments` and `raw_key`, then one `insertAttachment` per stored object;
+6. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` plus the recipient's
+   tag when it can be a label, `size`, `has_attachments` and `raw_key`, then one `insertAttachment`
+   per stored object;
 7. `touchThread`, which bumps `last_message_at`, rewrites `participants_json`, fills a missing
    subject, and increments `message_count`.
 
@@ -68,6 +70,12 @@ steps:
    `messageId`;
 5. persist one `direction: "outbound"` row labelled `["sent"]` with `raw_key` null, store each
    attachment at `att/{message_id}/{n}`, and call `touchThread`.
+
+All three take an optional `from`. `resolveSender` accepts it only when it normalizes to the
+inbox's own address, so an inbox can send as itself or as a subaddress of itself and nothing else;
+anything else is `400 invalid_address`. A tag on it makes the From header, the stored `from_addr`
+and the `["sent", tag]` labels all carry it, which is what makes the recipient reply to the
+subaddressed address and the inbound path label the reply the same way.
 
 A reply stays in the parent's thread and carries `In-Reply-To` and `References` built from the
 parent's stored bare identifiers, bracketed on the wire. A send or a forward opens a new thread.
@@ -149,7 +157,11 @@ must still sort in creation order.
 
 **Labels are a plain string array on the message.** Inbound is `["received","unread"]`, outbound is
 `["sent"]`, and a filter matches messages carrying all of the requested labels; a set of strings
-needs no schema change when a new label appears.
+needs no schema change when a new label appears. A subaddress tag is appended to that default set,
+so an address is a second way to write the same column and a human handing out
+`desk-agent+support@` gets a filtered channel without the agent labelling anything. A tag that
+`normalizeLabels` would refuse is dropped rather than rejected: an address a stranger controls must
+never be able to bounce mail or write an oversized row.
 
 **Lists are keyset-paginated.** A query fetches `limit + 1` rows and hands them to `page(rows,
 limit, toCursor)` from `src/lib/pagination.ts`, which trims and emits an opaque `next_page_token`

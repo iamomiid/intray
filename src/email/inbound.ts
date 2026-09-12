@@ -4,7 +4,7 @@ import { getInbox } from "../db/inboxes";
 import { insertMessage } from "../db/messages";
 import { getThread, insertThread, touchThread } from "../db/threads";
 import type { Env } from "../env";
-import { normalizeAddress } from "../lib/address";
+import { normalizeAddress, splitTag, tagLabel } from "../lib/address";
 import { newId } from "../lib/ids";
 import { INBOUND_MAX_BYTES } from "../lib/limits";
 import { now } from "../lib/time";
@@ -37,7 +37,15 @@ export interface InboundResult {
   inboxId: string;
 }
 
-const INBOUND_LABELS = JSON.stringify(["received", "unread"]);
+const INBOUND_LABELS: readonly string[] = ["received", "unread"];
+
+function inboundLabels(tag: string | null): string {
+  const label = tagLabel(tag);
+  if (label === null || INBOUND_LABELS.includes(label)) {
+    return JSON.stringify(INBOUND_LABELS);
+  }
+  return JSON.stringify([...INBOUND_LABELS, label]);
+}
 
 function participantsOf(parsed: ParsedEmail, existing: string[]): string {
   const seen: string[] = [];
@@ -67,7 +75,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   if (input.raw.byteLength > INBOUND_MAX_BYTES) {
     throw new InboundRejected(REJECT_TOO_LARGE);
   }
-  const inboxId = normalizeAddress(input.envelopeTo);
+  const { address: inboxId, tag } = splitTag(input.envelopeTo);
   const inbox = await getInbox(env.DB, inboxId);
   if (inbox === null) {
     throw new InboundRejected(REJECT_UNKNOWN_RECIPIENT);
@@ -129,7 +137,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     text: parsed.text,
     html: parsed.html,
     preview: parsed.preview,
-    labelsJson: INBOUND_LABELS,
+    labelsJson: inboundLabels(tag),
     size: input.raw.byteLength,
     hasAttachments: stored.length > 0 ? 1 : 0,
     rawKey,

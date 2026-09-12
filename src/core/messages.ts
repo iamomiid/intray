@@ -33,9 +33,15 @@ import {
 } from "../email/outbound";
 import { derivePreview } from "../email/parse";
 import type { Env } from "../env";
+import { splitTag, tagLabel } from "../lib/address";
 import { AppError, badRequest, notFound } from "../lib/errors";
 import { newId } from "../lib/ids";
-import { WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS, WAIT_POLL_MS } from "../lib/limits";
+import {
+  LABEL_MAX_CHARS,
+  WAIT_DEFAULT_SECONDS,
+  WAIT_MAX_SECONDS,
+  WAIT_POLL_MS,
+} from "../lib/limits";
 import { clampLimit, decodeCursor, type Page, page } from "../lib/pagination";
 import { now } from "../lib/time";
 import { requireInbox } from "./inboxes";
@@ -45,11 +51,14 @@ import { groupAttachments } from "./threads";
 
 const MAX_LABELS = 20;
 
-const MAX_LABEL_CHARS = 64;
-
 const WAIT_BATCH = 100;
 
-const OUTBOUND_LABELS = ["sent"];
+const OUTBOUND_LABELS: readonly string[] = ["sent"];
+
+interface OutboundIdentity {
+  email: string;
+  tag: string | null;
+}
 
 export interface ListMessagesQuery {
   labels?: string | string[];
@@ -87,6 +96,7 @@ export interface UpdateLabelsBody {
 }
 
 export interface SendMessageBody {
+  from?: string;
   to?: string | string[];
   cc?: string | string[];
   bcc?: string | string[];
@@ -141,8 +151,8 @@ function normalizeLabels(value: unknown): string[] {
     if (trimmed.length === 0) {
       throw badRequest("labels must not be empty");
     }
-    if (trimmed.length > MAX_LABEL_CHARS) {
-      throw badRequest(`labels must be at most ${MAX_LABEL_CHARS} characters`);
+    if (trimmed.length > LABEL_MAX_CHARS) {
+      throw badRequest(`labels must be at most ${LABEL_MAX_CHARS} characters`);
     }
     if (!labels.includes(trimmed)) {
       labels.push(trimmed);
@@ -362,6 +372,32 @@ function mailboxes(addresses: string[]): string {
   return JSON.stringify(addresses.map((address) => ({ address, name: null })));
 }
 
+function resolveSender(inbox: InboxRow, from: string | undefined): OutboundIdentity {
+  if (from === undefined || from === null) {
+    return { email: inbox.inbox_id, tag: null };
+  }
+  if (typeof from !== "string") {
+    throw badRequest("from must be a string", "invalid_address");
+  }
+  if (from.trim().length === 0) {
+    return { email: inbox.inbox_id, tag: null };
+  }
+  const subaddressed = from.trim().toLowerCase();
+  const { address, tag } = splitTag(subaddressed);
+  if (address !== inbox.inbox_id) {
+    throw badRequest("from must be the inbox address, optionally subaddressed", "invalid_address");
+  }
+  return { email: tag === null ? inbox.inbox_id : subaddressed, tag };
+}
+
+function outboundLabels(tag: string | null): string[] {
+  const label = tagLabel(tag);
+  if (label === null || OUTBOUND_LABELS.includes(label)) {
+    return [...OUTBOUND_LABELS];
+  }
+  return [...OUTBOUND_LABELS, label];
+}
+
 function assertRecipientsAllowed(principal: Principal, built: BuiltMessage): void {
   if (isVerified(principal)) {
     return;
@@ -380,6 +416,7 @@ async function persistOutbound(
   built: BuiltMessage,
   rfcMessageId: string | null,
   existingThread: ThreadRow | null,
+  sender: OutboundIdentity,
 ): Promise<MessageObject> {
   const messageId = newId("msg");
   const createdAt = now();
@@ -408,7 +445,7 @@ async function persistOutbound(
     rfcMessageId,
     inReplyTo: built.inReplyTo,
     referencesJson: JSON.stringify(built.references),
-    fromAddr: inbox.inbox_id,
+    fromAddr: sender.email,
     fromName: inbox.display_name,
     toJson: mailboxes(built.to),
     ccJson: mailboxes(built.cc),
@@ -418,7 +455,7 @@ async function persistOutbound(
     text: built.text,
     html: built.html,
     preview: derivePreview(built.text, built.html),
-    labelsJson: JSON.stringify(OUTBOUND_LABELS),
+    labelsJson: JSON.stringify(outboundLabels(sender.tag)),
     size: built.size,
     hasAttachments: built.attachments.length > 0 ? 1 : 0,
     rawKey: null,
@@ -461,8 +498,9 @@ export async function sendMessage(
   body: SendMessageBody,
 ): Promise<MessageObject> {
   const inbox = await requireInbox(env, principal, inboxId);
+  const sender = resolveSender(inbox, body.from);
   const built = buildSend({
-    from: { name: inbox.display_name, email: inbox.inbox_id },
+    from: { name: inbox.display_name, email: sender.email },
     to: body.to,
     cc: body.cc,
     bcc: body.bcc,
@@ -475,7 +513,7 @@ export async function sendMessage(
   });
   assertRecipientsAllowed(principal, built);
   const rfcMessageId = await send(env, built.builder);
-  return persistOutbound(env, inbox, built, rfcMessageId, null);
+  return persistOutbound(env, inbox, built, rfcMessageId, null, sender);
 }
 
 export async function replyToMessage(
@@ -487,11 +525,15 @@ export async function replyToMessage(
 ): Promise<MessageObject> {
   const inbox = await requireInbox(env, principal, inboxId);
   const parent = await requireMessage(env, inbox, messageId);
-  const built = buildReply(parent, inbox, body);
+  const sender = resolveSender(inbox, body.from);
+  const built = buildReply(parent, inbox, body, {
+    name: inbox.display_name,
+    email: sender.email,
+  });
   assertRecipientsAllowed(principal, built);
   const thread = await getThreadRow(env.DB, inbox.inbox_id, parent.thread_id);
   const rfcMessageId = await send(env, built.builder);
-  return persistOutbound(env, inbox, built, rfcMessageId, thread);
+  return persistOutbound(env, inbox, built, rfcMessageId, thread, sender);
 }
 
 export async function forwardMessage(
@@ -504,8 +546,12 @@ export async function forwardMessage(
   const inbox = await requireInbox(env, principal, inboxId);
   const parent = await requireMessage(env, inbox, messageId);
   const parentAttachments = await listAttachmentRows(env.DB, parent.message_id);
-  const built = await buildForward(env, parent, parentAttachments, inbox, body);
+  const sender = resolveSender(inbox, body.from);
+  const built = await buildForward(env, parent, parentAttachments, body, {
+    name: inbox.display_name,
+    email: sender.email,
+  });
   assertRecipientsAllowed(principal, built);
   const rfcMessageId = await send(env, built.builder);
-  return persistOutbound(env, inbox, built, rfcMessageId, null);
+  return persistOutbound(env, inbox, built, rfcMessageId, null, sender);
 }

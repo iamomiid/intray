@@ -273,6 +273,53 @@ it("refuses a send to a stranger while the account is unverified", async () => {
   expect(payload<{ error: { code: string } }>(result).error.code).toBe("message_rejected");
 });
 
+it("sends from a subaddressed address and labels the outbound message", async () => {
+  const created = await onboard();
+  await callTool("create_inbox", { username: "agent" }, created.api_key);
+
+  const sent = payload<{ message_id: string; labels: string[]; from: { address: string } }>(
+    await callTool(
+      "send_message",
+      {
+        inbox_id: INBOX_ID,
+        from: "agent+notices@intray.example",
+        to: HUMAN,
+        subject: "Notice",
+        text: "For your records.",
+      },
+      created.api_key,
+    ),
+  );
+
+  expect(sent.labels).toEqual(["sent", "notices"]);
+  expect(sent.from.address).toBe("agent+notices@intray.example");
+
+  const listed = payload<{ items: { message_id: string }[] }>(
+    await callTool("list_messages", { inbox_id: INBOX_ID, labels: "notices" }, created.api_key),
+  );
+  expect(listed.items.map((item) => item.message_id)).toEqual([sent.message_id]);
+});
+
+it("refuses a send whose from is not the inbox address", async () => {
+  const created = await onboard();
+  await callTool("create_inbox", { username: "agent" }, created.api_key);
+
+  const result = await callTool(
+    "send_message",
+    {
+      inbox_id: INBOX_ID,
+      from: "someone-else@intray.example",
+      to: HUMAN,
+      subject: "Spoofed",
+      text: "Nope.",
+    },
+    created.api_key,
+  );
+
+  expect(result.isError).toBe(true);
+  expect(payload<{ error: { code: string } }>(result).error.code).toBe("invalid_address");
+});
+
 it("reads an ingested message and its text attachment through the tools", async () => {
   const created = await onboard();
   await callTool("create_inbox", { username: "agent" }, created.api_key);

@@ -169,7 +169,7 @@ it("stores attachments and derives a preview from html", async () => {
   }
 });
 
-it("routes a plus tagged recipient to the base inbox", async () => {
+it("routes a plus tagged recipient to the base inbox and labels it with the tag", async () => {
   const result = await ingestInbound(env, {
     envelopeFrom: "alice@example.com",
     envelopeTo: "Agent+Reports@Intray.Example",
@@ -179,6 +179,30 @@ it("routes a plus tagged recipient to the base inbox", async () => {
 
   const row = await getMessage(env.DB, INBOX_ID, result.messageId);
   expect(row?.inbox_id).toBe(INBOX_ID);
+  expect(JSON.parse(row?.labels_json ?? "[]")).toEqual(["received", "unread", "reports"]);
+});
+
+it("drops a tag that cannot be a label and still delivers", async () => {
+  const result = await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: `agent+${"x".repeat(65)}@intray.example`,
+    raw: bytes(plainEml),
+  });
+
+  const row = await getMessage(env.DB, INBOX_ID, result.messageId);
+  expect(row?.inbox_id).toBe(INBOX_ID);
+  expect(JSON.parse(row?.labels_json ?? "[]")).toEqual(["received", "unread"]);
+});
+
+it("does not repeat a tag that is already a default label", async () => {
+  const result = await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: "agent+unread@intray.example",
+    raw: bytes(plainEml),
+  });
+
+  const row = await getMessage(env.DB, INBOX_ID, result.messageId);
+  expect(JSON.parse(row?.labels_json ?? "[]")).toEqual(["received", "unread"]);
 });
 
 it("rejects an unknown recipient", async () => {

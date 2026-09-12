@@ -8,6 +8,8 @@ import {
   parseAddress,
   randomUsername,
   splitAddress,
+  splitTag,
+  tagLabel,
 } from "../src/lib/address";
 import { constantTimeEqual, generateApiKey, sha256Hex } from "../src/lib/hash";
 import { clampLimit, decodeCursor, encodeCursor, page } from "../src/lib/pagination";
@@ -39,6 +41,33 @@ it("normalizes case and strips plus tags", () => {
     username: "agent",
     domain: "intray.example",
   });
+});
+
+it("splits a subaddressed recipient into a base address and a tag", () => {
+  expect(splitTag(" Agent+Invoices@Intray.Example ")).toEqual({
+    address: "agent@intray.example",
+    tag: "invoices",
+  });
+  expect(splitTag("agent+a+b@intray.example")).toEqual({
+    address: "agent@intray.example",
+    tag: "a+b",
+  });
+  expect(splitTag("agent@intray.example")).toEqual({
+    address: "agent@intray.example",
+    tag: null,
+  });
+  expect(splitTag("agent+@intray.example")).toEqual({
+    address: "agent@intray.example",
+    tag: null,
+  });
+});
+
+it("turns a tag into a label only when it can be one", () => {
+  expect(tagLabel("invoices")).toBe("invoices");
+  expect(tagLabel(null)).toBeNull();
+  expect(tagLabel("   ")).toBeNull();
+  expect(tagLabel("x".repeat(64))).toBe("x".repeat(64));
+  expect(tagLabel("x".repeat(65))).toBeNull();
 });
 
 it("validates email addresses", () => {

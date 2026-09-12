@@ -267,6 +267,54 @@ it("sends from a verified account and records it with the sent label", async () 
   expect(page.items.map((item) => item.message_id)).toEqual([message.message_id]);
 });
 
+it("sends from a subaddressed own address and carries the tag as a label", async () => {
+  const account = await signupOver(EMAIL);
+  await verifyOver(account);
+  const auth = { authorization: `Bearer ${account.api_key}` };
+  const base = `/v1/inboxes/${encodeURIComponent(account.inbox_id)}`;
+  const [username, domain] = account.inbox_id.split("@");
+
+  const sent = await SELF.fetch(url(`${base}/messages/send`), {
+    method: "POST",
+    headers: auth,
+    body: JSON.stringify({
+      from: `${username}+invoices@${domain}`,
+      to: "recipient@example.com",
+      subject: "Invoice 42",
+      text: "Attached.",
+    }),
+  });
+
+  expect(sent.status).toBe(201);
+  const message = await sent.json<MessageResponse>();
+  expect(message.labels).toEqual(["sent", "invoices"]);
+
+  const listed = await SELF.fetch(url(`${base}/messages?labels=invoices`), { headers: auth });
+  expect((await listed.json<MessagePage>()).items.map((item) => item.message_id)).toEqual([
+    message.message_id,
+  ]);
+});
+
+it("rejects a from that is not the inbox address", async () => {
+  const account = await signupOver(EMAIL);
+  await verifyOver(account);
+  const base = `/v1/inboxes/${encodeURIComponent(account.inbox_id)}`;
+
+  const rejected = await SELF.fetch(url(`${base}/messages/send`), {
+    method: "POST",
+    headers: { authorization: `Bearer ${account.api_key}` },
+    body: JSON.stringify({
+      from: "someone-else@agents.test",
+      to: "recipient@example.com",
+      subject: "Spoofed",
+      text: "Nope.",
+    }),
+  });
+
+  expect(rejected.status).toBe(400);
+  expect((await rejected.json<ErrorResponse>()).error.code).toBe("invalid_address");
+});
+
 it("rejects a send from an unverified account to a third party", async () => {
   const account = await signupOver(EMAIL);
   const base = `/v1/inboxes/${encodeURIComponent(account.inbox_id)}`;
@@ -297,14 +345,16 @@ it("replies to an ingested message and stays in its thread", async () => {
     raw: bytes(plainEml.replace("From: Alice Example <alice@example.com>", `From: <${EMAIL}>`)),
   });
 
+  const [username, domain] = account.inbox_id.split("@");
   const replied = await SELF.fetch(url(`${base}/messages/${ingested.messageId}/reply`), {
     method: "POST",
     headers: auth,
-    body: JSON.stringify({ text: "Thanks." }),
+    body: JSON.stringify({ from: `${username}+support@${domain}`, text: "Thanks." }),
   });
 
   expect(replied.status).toBe(201);
   const message = await replied.json<MessageResponse>();
   expect(message.thread_id).toBe(ingested.threadId);
   expect(message.subject).toBe("Re: Quarterly status");
+  expect(message.labels).toEqual(["sent", "support"]);
 });

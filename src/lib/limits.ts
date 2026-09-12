@@ -13,3 +13,5 @@ export const WAIT_DEFAULT_SECONDS = 30;
 export const WAIT_POLL_MS = 2000;
 
 export const PREVIEW_CHARS = 200;
+
+export const LABEL_MAX_CHARS = 64;

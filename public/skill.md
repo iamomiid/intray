@@ -127,6 +127,23 @@ curl -sS -X POST '<PUBLIC_URL>/v1/inboxes/signups%40agents.example.com/messages/
 
 MCP: `send_message {"inbox_id":"...","to":"you@example.com","subject":"Status","text":"Done."}`.
 
+Use a `+tag` on the address when you want mail sorted for you. Anything sent to
+`signups+alerts@agents.example.com` lands in the `signups@agents.example.com` inbox already
+labelled `alerts`, so hand that address to a human or a service and then read the channel with
+`list_messages {"inbox_id":"signups@agents.example.com","labels":"alerts"}`. It works in the other
+direction too: pass `from` to `send_message` or `reply_to_message` to send as a subaddress of your
+own inbox.
+
+```sh
+curl -sS -X POST '<PUBLIC_URL>/v1/inboxes/signups%40agents.example.com/messages/send' \
+  -H 'Authorization: Bearer it_...' -H 'content-type: application/json' \
+  -d '{"from":"signups+alerts@agents.example.com","to":"you@example.com","subject":"Status","text":"Done."}'
+```
+
+That message is stored with labels `["sent","alerts"]`, and because the recipient replies to the
+address it came from, the reply arrives labelled `alerts` too. `from` must be your own inbox
+address, with or without a tag; anything else is rejected.
+
 Search an inbox:
 
 ```sh
