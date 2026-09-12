@@ -136,6 +136,32 @@ export interface SuppressionRow {
   last_seen_at: number;
 }
 
+export interface DmarcReportRow {
+  report_id: string;
+  domain: string;
+  org_name: string;
+  org_email: string | null;
+  external_report_id: string;
+  begin_at: number;
+  end_at: number;
+  policy_json: string;
+  message_id: string | null;
+  created_at: number;
+}
+
+export interface DmarcRecordRow {
+  record_id: string;
+  report_id: string;
+  source_ip: string;
+  count: number;
+  disposition: string;
+  dkim: string;
+  spf: string;
+  header_from: string | null;
+  envelope_from: string | null;
+  auth_json: string;
+}
+
 export interface WebhookRow {
   webhook_id: string;
   account_id: string;

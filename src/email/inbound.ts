@@ -1,4 +1,5 @@
 import { type ExtractableAttachment, storeAttachmentText } from "../core/attachments";
+import { recordDmarcReports } from "../core/deliverability";
 import { parseStringArray } from "../core/serialize";
 import { recordBounce } from "../core/suppressions";
 import { recordReceived, withinInboundQuota } from "../core/usage";
@@ -14,6 +15,7 @@ import { INBOUND_MAX_BYTES } from "../lib/limits";
 import { now } from "../lib/time";
 import { notifyInbox } from "../waiter";
 import { type BounceRecipient, detectBounce } from "./bounce";
+import { type DmarcAggregateReport, readDmarcReports } from "./dmarc";
 import { type ParsedEmail, type ParsedMailbox, parseMime } from "./parse";
 import { rejectsAttachment, type SpamAssessment, scoreSpam } from "./spam";
 import { resolveThreadId } from "./threading";
@@ -54,16 +56,25 @@ const INBOUND_LABELS: readonly string[] = ["received", "unread"];
 
 export const BOUNCE_LABEL = "bounce";
 
+export const DMARC_LABEL = "dmarc";
+
 const SPAM_LABELS: readonly string[] = ["received", "spam"];
 
-function inboundLabels(tag: string | null, spam: boolean, bounced: boolean): string {
-  const base = spam ? SPAM_LABELS : INBOUND_LABELS;
-  const withBounce = bounced ? [...base, BOUNCE_LABEL] : [...base];
+interface InboundKind {
+  spam: boolean;
+  bounced: boolean;
+  dmarc: boolean;
+}
+
+function inboundLabels(tag: string | null, kind: InboundKind): string {
+  const base = kind.spam ? SPAM_LABELS : INBOUND_LABELS;
+  const withBounce = kind.bounced ? [...base, BOUNCE_LABEL] : [...base];
+  const withDmarc = kind.dmarc ? [...withBounce, DMARC_LABEL] : withBounce;
   const label = tagLabel(tag);
-  if (label === null || withBounce.includes(label)) {
-    return JSON.stringify(withBounce);
+  if (label === null || withDmarc.includes(label)) {
+    return JSON.stringify(withDmarc);
   }
-  return JSON.stringify([...withBounce, label]);
+  return JSON.stringify([...withDmarc, label]);
 }
 
 function detectedBounce(parsed: ParsedEmail): BounceRecipient[] {
@@ -71,6 +82,15 @@ function detectedBounce(parsed: ParsedEmail): BounceRecipient[] {
     return detectBounce(parsed);
   } catch (error) {
     console.error("bounce detection failed", error);
+    return [];
+  }
+}
+
+function detectedDmarc(parsed: ParsedEmail): DmarcAggregateReport[] {
+  try {
+    return readDmarcReports(parsed.attachments);
+  } catch (error) {
+    console.error("dmarc parsing failed", error);
     return [];
   }
 }
@@ -131,6 +151,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   const parsed = await parseMime(input.raw);
   const spam = assessSpam(env, parsed, input.envelopeFrom);
   const bounced = detectedBounce(parsed);
+  const dmarc = detectedDmarc(parsed);
   const messageId = newId("msg");
   const rawKey = `raw/${messageId}.eml`;
   const createdAt = now();
@@ -186,7 +207,11 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     text: parsed.text,
     html: parsed.html,
     preview: parsed.preview,
-    labelsJson: inboundLabels(tag, spam.labelled, bounced.length > 0),
+    labelsJson: inboundLabels(tag, {
+      spam: spam.labelled,
+      bounced: bounced.length > 0,
+      dmarc: dmarc.length > 0,
+    }),
     size: input.raw.byteLength,
     hasAttachments: stored.length > 0 ? 1 : 0,
     rawKey,
@@ -221,6 +246,9 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     subject: parsed.subject,
   });
 
+  if (dmarc.length > 0) {
+    await recordDmarcReports(env, messageId, dmarc);
+  }
   if (bounced.length > 0) {
     await recordBounce(env, inbox.account_id, messageId, bounced);
     await emitEvent(env, inbox.account_id, "message.bounced", inbox.inbox_id, messageId);

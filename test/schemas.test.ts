@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, expect, it } from "vitest";
 import { getAttachment } from "../src/core/attachments";
+import { getDeliverability, getDmarcReport, listDmarcReports } from "../src/core/deliverability";
 import { createDraft, getDraft, listDrafts } from "../src/core/drafts";
 import { getInbox, listInboxes } from "../src/core/inboxes";
 import { createApiKey, listApiKeys } from "../src/core/keys";
@@ -23,9 +24,12 @@ import { getUsage } from "../src/core/usage";
 import { createWebhook, getWebhook, listWebhooks } from "../src/core/webhooks";
 import { insertAccount } from "../src/db/accounts";
 import { listAttachments } from "../src/db/attachments";
+import { insertDmarcRecords, insertDmarcReport } from "../src/db/dmarc";
 import { insertDomain, updateDomain } from "../src/db/domains";
 import { insertInbox } from "../src/db/inboxes";
 import { type InboundResult, ingestInbound } from "../src/email/inbound";
+import { newId } from "../src/lib/ids";
+import { now } from "../src/lib/time";
 import {
   accountObject,
   apiKeyPage,
@@ -33,6 +37,9 @@ import {
   auditPage,
   createdApiKeyObject,
   createdWebhookObject,
+  deliverabilityObject,
+  dmarcReportDetailObject,
+  dmarcReportPage,
   domainObject,
   domainPage,
   draftObject,
@@ -258,6 +265,54 @@ it("parses the usage object against its schema", async () => {
   expect(usage.inboxes).toBe(1);
   expect(usage.period).toMatch(/^\d{4}-\d{2}$/);
   expect(usage.limits.inboxes).toBe(10);
+});
+
+it("parses the deliverability summary and a DMARC report against their schemas", async () => {
+  const principal = await seed();
+  await createOrg(env, principal, { name: "Acme", admin_secret: ADMIN_SECRET });
+  const reportId = newId("dmr");
+  await insertDmarcReport(env.DB, {
+    reportId,
+    domain: "intray.example",
+    orgName: "Reporter Example",
+    orgEmail: "dmarc-reports@reporter.example",
+    externalReportId: "report-a",
+    beginAt: now() - 1000,
+    endAt: now(),
+    policyJson: JSON.stringify({
+      domain: "intray.example",
+      p: "reject",
+      sp: null,
+      pct: 100,
+      adkim: "r",
+      aspf: "s",
+    }),
+    messageId: null,
+    createdAt: now(),
+  });
+  await insertDmarcRecords(env.DB, [
+    {
+      recordId: newId("dmc"),
+      reportId,
+      sourceIp: "192.0.2.10",
+      count: 4,
+      disposition: "none",
+      dkim: "pass",
+      spf: "pass",
+      headerFrom: "intray.example",
+      envelopeFrom: "intray.example",
+      authJson: JSON.stringify({ dkim: [{ domain: "intray.example", result: "pass" }], spf: [] }),
+    },
+  ]);
+
+  const summary = deliverabilityObject.parse(await getDeliverability(env, principal, {}));
+  expect(summary.dmarc.reports).toBe(1);
+  expect(summary.dmarc.top_sources[0]?.source_ip).toBe("192.0.2.10");
+
+  expect(dmarcReportPage.parse(await listDmarcReports(env, principal, {})).items).toHaveLength(1);
+  const report = dmarcReportDetailObject.parse(await getDmarcReport(env, principal, reportId));
+  expect(report.records).toHaveLength(1);
+  expect(report.policy.sp).toBeNull();
 });
 
 it("rejects an object carrying a field the schema does not name", async () => {

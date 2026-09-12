@@ -33,3 +33,18 @@ export const WEBHOOK_TIMEOUT_MS = 10_000;
 export const SUPPRESSION_DETAIL_MAX_CHARS = 512;
 
 export const DOMAIN_NAME_MAX_CHARS = 253;
+export const DMARC_MAX_INPUT_BYTES = 4 * 1024 * 1024;
+
+export const DMARC_MAX_XML_BYTES = 8 * 1024 * 1024;
+
+export const DMARC_MAX_RECORDS = 2000;
+
+export const DMARC_TOP_SOURCES = 5;
+
+export const DELIVERABILITY_DEFAULT_DAYS = 30;
+
+export const DELIVERABILITY_MAX_DAYS = 365;
+
+export const BOUNCE_RATE_WARN = 0.05;
+
+export const DMARC_PASS_RATE_WARN = 0.95;

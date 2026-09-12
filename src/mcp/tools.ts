@@ -20,6 +20,8 @@ import {
   deleteWebhook,
   forwardMessage,
   getAttachment,
+  getDeliverability,
+  getDmarcReport,
   getDraft,
   getInbox,
   getMessage,
@@ -28,6 +30,7 @@ import {
   getUsage,
   getWebhook,
   listAudit,
+  listDmarcReports,
   listDomains,
   listDrafts,
   listInboxes,
@@ -72,6 +75,8 @@ import {
   createOrgInput,
   createSuppressionInput,
   createWebhookInput,
+  deliverabilityInput,
+  dmarcReportInput,
   domainInput,
   draftInput,
   emptyInput,
@@ -79,6 +84,7 @@ import {
   inboxInput,
   inviteInput,
   listAuditInput,
+  listDmarcReportsInput,
   listDomainsInput,
   listDraftsInput,
   listInboxesInput,
@@ -679,6 +685,51 @@ function registerSuppressionTools(server: McpServer, env: Env, principal: Princi
   );
 }
 
+function registerDeliverabilityTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "get_deliverability",
+    {
+      title: "Get deliverability",
+      description:
+        "Return how this account's sending is being received over a window of days, 30 by" +
+        " default: messages sent, bounce reports received, hard and soft bounces, the bounce rate," +
+        " the size of the suppression list, and the DMARC aggregate figures for the mail domain." +
+        " warnings names concrete problems in plain words, and is empty when there are none." +
+        " Call it when replies stop arriving. The operator and an org admin see the whole" +
+        " deployment; any other account sees its own sends and bounces, and the DMARC figures," +
+        " which are domain-level and never per account.",
+      inputSchema: deliverabilityInput,
+    },
+    (args) => run(() => getDeliverability(env, principal, args)),
+  );
+
+  server.registerTool(
+    "list_dmarc_reports",
+    {
+      title: "List DMARC reports",
+      description:
+        "List the DMARC aggregate reports stored for the mail domain, newest reporting period" +
+        " first. domain narrows the list to one served domain. The operator and org admins only;" +
+        " any other account gets forbidden.",
+      inputSchema: listDmarcReportsInput,
+    },
+    (args) => run(() => listDmarcReports(env, principal, args)),
+  );
+
+  server.registerTool(
+    "get_dmarc_report",
+    {
+      title: "Get DMARC report",
+      description:
+        "Fetch one DMARC aggregate report with every record in it: the sending address, how many" +
+        " messages it sent, what the receiver did with them, and the DKIM and SPF results. The" +
+        " operator and org admins only.",
+      inputSchema: dmarcReportInput,
+    },
+    (args) => run(() => getDmarcReport(env, principal, args.report_id)),
+  );
+}
+
 function registerOrgTools(server: McpServer, env: Env, principal: Principal): void {
   server.registerTool(
     "create_org",
@@ -818,5 +869,6 @@ export function registerTools(server: McpServer, env: Env, principal: Principal 
   registerWebhookTools(server, env, principal);
   registerDomainTools(server, env, principal);
   registerSuppressionTools(server, env, principal);
+  registerDeliverabilityTools(server, env, principal);
   registerOrgTools(server, env, principal);
 }
