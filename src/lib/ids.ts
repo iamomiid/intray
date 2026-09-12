@@ -19,6 +19,10 @@ export type IdPrefix =
 
 const nextUlid = monotonicFactory();
 
+export function newUlid(): string {
+  return nextUlid().toLowerCase();
+}
+
 export function newId(prefix: IdPrefix): string {
-  return `${prefix}_${nextUlid().toLowerCase()}`;
+  return `${prefix}_${newUlid()}`;
 }

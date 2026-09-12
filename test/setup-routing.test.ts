@@ -101,6 +101,7 @@ function contextFor(overrides: Partial<SetupContext> = {}): SetupContext {
       allowSignup: "",
       operatorToken: "",
       routing: "",
+      transport: "",
       dmarcReports: false,
       acceptChanges: true,
       yes: true,
@@ -124,8 +125,10 @@ function contextFor(overrides: Partial<SetupContext> = {}): SetupContext {
     subdomainMode: true,
     operatorToken: "",
     routingMode: "per_inbox",
+    transport: "cloudflare",
     dmarcHint: "",
     routingHint: "",
+    transportHint: "",
     ...overrides,
   };
 }

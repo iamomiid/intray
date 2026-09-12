@@ -1,5 +1,6 @@
 import { config, type Env } from "../env";
 import { AppError } from "../lib/errors";
+import { buildSend, send } from "./outbound";
 
 export interface OtpEmailInput {
   to: string;
@@ -34,11 +35,12 @@ function otpHtml(code: string): string {
 }
 
 export async function sendOtpEmail(env: Env, input: OtpEmailInput): Promise<void> {
-  await env.EMAIL.send({
+  const built = buildSend({
     from: { name: "intray", email: `noreply@${senderDomain(env)}` },
     to: input.to,
     subject: `${input.code} is your intray verification code`,
     text: otpText(input.code),
     html: otpHtml(input.code),
   });
+  await send(env, built.message);
 }

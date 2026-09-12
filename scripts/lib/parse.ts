@@ -1,3 +1,6 @@
+import type { MailTransportName } from "../../src/email/transports/secrets.ts";
+import { isMailTransportName, MAIL_TRANSPORTS } from "../../src/email/transports/secrets.ts";
+
 export type RoutingMode = "catch_all" | "per_inbox";
 
 export const ROUTING_MODES: RoutingMode[] = ["catch_all", "per_inbox"];
@@ -8,6 +11,7 @@ export interface ParsedArgs {
   allowSignup: string;
   operatorToken: string;
   routing: RoutingMode | "";
+  transport: MailTransportName | "";
   dmarcReports: boolean;
   acceptChanges: boolean;
   yes: boolean;
@@ -41,6 +45,11 @@ function routingValue(value: string): RoutingMode | "" {
   return trimmed === "per_inbox" || trimmed === "catch_all" ? trimmed : "";
 }
 
+function transportValue(value: string): MailTransportName | "" {
+  const trimmed = value.trim().toLowerCase();
+  return isMailTransportName(trimmed) ? trimmed : "";
+}
+
 function applyOptionValue(parsed: ParsedArgs, name: string, value: string): void {
   if (name === "--domain") {
     parsed.domain = value.trim().toLowerCase();
@@ -53,6 +62,15 @@ function applyOptionValue(parsed: ParsedArgs, name: string, value: string): void
       return;
     }
     parsed.routing = mode;
+  } else if (name === "--transport") {
+    const transport = transportValue(value);
+    if (transport === "") {
+      parsed.errors.push(
+        `--transport must be one of ${MAIL_TRANSPORTS.join(", ")}: ${value.trim()}`,
+      );
+      return;
+    }
+    parsed.transport = transport;
   } else if (name === "--operator-token") {
     const trimmed = value.trim();
     parsed.operatorToken = trimmed === "" ? GENERATE_OPERATOR_TOKEN : trimmed;
@@ -88,6 +106,7 @@ function applyArgument(argv: string[], index: number, parsed: ParsedArgs): numbe
     name !== "--email" &&
     name !== "--allow-signup" &&
     name !== "--routing" &&
+    name !== "--transport" &&
     name !== "--operator-token"
   ) {
     parsed.errors.push(`unknown argument: ${token}`);
@@ -127,6 +146,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     allowSignup: "",
     operatorToken: "",
     routing: "",
+    transport: "",
     dmarcReports: false,
     acceptChanges: false,
     yes: false,

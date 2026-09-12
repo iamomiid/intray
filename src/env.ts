@@ -1,4 +1,5 @@
 import type { WebhookJob } from "./core/webhooks";
+import type { MailTransport } from "./email/transport";
 import type { InboxWaiter } from "./waiter";
 
 export interface Env {
@@ -8,6 +9,7 @@ export interface Env {
   RATE: RateLimit;
   WEBHOOKS: Queue<WebhookJob>;
   INBOX_WAITER?: DurableObjectNamespace<InboxWaiter>;
+  MAIL?: MailTransport;
   MAIL_DOMAINS: string;
   INBOX_LIMIT: string;
   DOMAIN_LIMIT?: string;
@@ -19,11 +21,23 @@ export interface Env {
   SPAM_LABEL_THRESHOLD?: string;
   SPAM_REJECT_THRESHOLD?: string;
   ROUTING_MODE?: string;
+  MAIL_TRANSPORT?: string;
   CLOUDFLARE_ZONE_ID?: string;
   WORKER_NAME?: string;
   ROUTING_API_TOKEN?: string;
   OPERATOR_TOKEN?: string;
   ADMIN_SECRET?: string;
+  INBOUND_SECRET?: string;
+  SMTP_HOST?: string;
+  SMTP_PORT?: string;
+  SMTP_USERNAME?: string;
+  SMTP_PASSWORD?: string;
+  SMTP_SECURE?: string;
+  AWS_ACCESS_KEY_ID?: string;
+  AWS_SECRET_ACCESS_KEY?: string;
+  AWS_REGION?: string;
+  AWS_SESSION_TOKEN?: string;
+  RESEND_API_KEY?: string;
 }
 
 export interface Quotas {

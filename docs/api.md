@@ -58,11 +58,16 @@ key lookup.
 | `QUOTA_STORAGE_BYTES` | per-account cap on stored bytes, as a string. Empty, absent or `0` is unlimited |
 | `SPAM_LABEL_THRESHOLD` | inbound `spam_score` at or above which a message is stored labelled `spam` rather than `unread`, as a string. Default `50` |
 | `SPAM_REJECT_THRESHOLD` | inbound `spam_score` at or above which a message is refused with `550 rejected as spam`, as a string. Default `90`; `0` never rejects |
+| `MAIL_TRANSPORT` | `cloudflare`, the default, `smtp`, `ses` or `resend`. Picks how mail leaves the deployment; see "Mail transports" |
 | `ROUTING_MODE` | `catch_all`, the default, or `per_inbox`. In `per_inbox` every inbox gets its own Email Routing rule and the zone catch-all is off, so the domain accepts mail only for addresses that exist |
 | `CLOUDFLARE_ZONE_ID` | the zone the routing rules are written to. Only read in `per_inbox` mode |
 | `WORKER_NAME` | the script name a routing rule's worker action targets. Default `intray` |
 | `ROUTING_API_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put ROUTING_API_TOKEN` or by the setup when `CLOUDFLARE_API_TOKEN` is in the environment. A zone-scoped API token with Email Routing Rules Edit is enough for `per_inbox` mode alone; the custom-domain endpoints need it scoped to **all zones in the account** with Zone Read, DNS Edit, Email Routing Rules Edit and Email Routing Addresses Edit. Read in `per_inbox` mode and by every `/v1/domains` call; both fail 503 `routing_unavailable` without it. Put it in `.dev.vars` for `pnpm dev` |
 | `OPERATOR_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put OPERATOR_TOKEN` or `pnpm run setup --operator-token`, never in `wrangler.jsonc`. Authenticates the operator principal. Absent, empty, or shorter than 32 characters disables it. Put it in `.dev.vars` for `pnpm dev` |
+| `INBOUND_SECRET` | a **secret**, not a var. Set with `pnpm wrangler secret put INBOUND_SECRET`, never in `wrangler.jsonc`. Authenticates `POST /v1/inbound` and `POST /v1/inbound/bounces`, and nothing else. Absent, empty, or shorter than 32 characters closes both endpoints. Put it in `.dev.vars` for `pnpm dev` |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_SECURE` | **secrets** the `smtp` transport reads. `SMTP_PORT` defaults to 587, or 465 when `SMTP_SECURE` is `tls`; `SMTP_SECURE` is `tls` or `starttls` and defaults to `starttls` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_SESSION_TOKEN` | **secrets** the `ses` transport reads. The session token is optional |
+| `RESEND_API_KEY` | a **secret** the `resend` transport reads |
 | `ADMIN_SECRET` | a **secret**, not a var. Set with `pnpm wrangler secret put ADMIN_SECRET`, never in `wrangler.jsonc`. Presented as `x-admin-secret` on `POST /v1/orgs` to bootstrap company mode, and used nowhere else. Absent, empty, or shorter than 32 characters disables the bootstrap. Put it in `.dev.vars` for `pnpm dev` |
 
 Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm run setup
@@ -76,7 +81,7 @@ Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm 
 
 | Status | Code |
 | --- | --- |
-| 400 | `bad_request`, `invalid_address`, `invalid_code`, `recipient_suppressed`, `e_too_many_recipients`, `e_content_too_large`, `e_header_not_allowed` |
+| 400 | `bad_request`, `invalid_address`, `invalid_code`, `recipient_suppressed`, `message_rejected`, `rejected`, `e_too_many_recipients`, `e_content_too_large`, `e_header_not_allowed` |
 | 401 | `unauthorized` |
 | 403 | `forbidden`, `message_rejected`, `signup_closed` |
 | 404 | `not_found` |
@@ -92,9 +97,11 @@ is returned when a signup names the operator address. `forbidden` is returned wh
 secret is wrong or disabled, when a member calls an admin-only org endpoint, and when a key scoped
 to an inbox calls an account-level endpoint. `quota_exceeded` is returned when a send, reply, forward or draft
 send would pass `QUOTA_MESSAGES_SENT_PER_MONTH`; inbound mail past a quota is refused at the SMTP
-transaction with `552 quota exceeded` and never becomes an API error.
+transaction with `552 quota exceeded`, and over `POST /v1/inbound` the same refusal comes back as
+400 `rejected` carrying that reason.
 
-Two more inbound refusals happen at the SMTP transaction and never become API errors either. Mail
+Two more inbound refusals happen at the SMTP transaction, and come back the same way over `POST
+/v1/inbound`. Mail
 scoring at or above `SPAM_REJECT_THRESHOLD` is refused with `550 rejected as spam`, and mail
 carrying an executable attachment — `exe`, `com`, `scr`, `pif`, `bat`, `cmd`, `msi`, `hta`, `lnk`,
 `vbs`, `ps1`, `jar`, loose or inside a zip — with `550 attachment type not accepted`, whatever its
@@ -114,10 +121,39 @@ the address. It is raised before the message leaves the Worker, and the send bin
 `E_RECIPIENT_SUPPRESSED` maps onto the same code, so a caller sees one code whichever list the
 address is on. The operator principal is not exempt.
 
-The three `e_*` codes and `sender_not_verified` come from the send binding and only ever appear on a
-send, reply, forward or draft send: they are the binding's `E_TOO_MANY_RECIPIENTS`,
-`E_CONTENT_TOO_LARGE`, `E_HEADER_NOT_ALLOWED` and `E_SENDER_NOT_VERIFIED` lowercased, and
-`E_RATE_LIMIT_EXCEEDED` becomes `too_many_requests`.
+The three `e_*` codes are the `cloudflare` transport's alone: they are the send binding's
+`E_TOO_MANY_RECIPIENTS`, `E_CONTENT_TOO_LARGE` and `E_HEADER_NOT_ALLOWED` lowercased, and only ever
+appear on a send, reply, forward or draft send.
+
+`sender_not_verified` at 503, `too_many_requests` at 429, `recipient_suppressed` at 400 and
+`message_rejected` at 400 are the contract every transport maps its provider's rejections onto, so
+a caller reads the same four codes whichever `MAIL_TRANSPORT` is set. `message_rejected` also keeps
+its older meaning at 403, where an unverified account sends anywhere but its own address; the
+status separates the two. A `MAIL_TRANSPORT` whose secrets are missing fails the send with 503
+`sender_not_verified` naming the missing secret, for example `MAIL_TRANSPORT is ses but
+AWS_SECRET_ACCESS_KEY is not set`, and so does a `MAIL_TRANSPORT` naming no known transport.
+
+`rejected` is returned by `POST /v1/inbound` alone and carries the `550` or `552` reason the SMTP
+transaction would have returned.
+
+## Mail transports
+
+`MAIL_TRANSPORT` picks the module that puts a composed message on the wire. `src/core` and both
+adapters are the same whichever it is; only the mapping below changes.
+
+| Transport | How it sends | `sender_not_verified` | `too_many_requests` | `recipient_suppressed` | `message_rejected` |
+| --- | --- | --- | --- | --- | --- |
+| `cloudflare` | the `EMAIL` `send_email` binding | `E_SENDER_NOT_VERIFIED` | `E_RATE_LIMIT_EXCEEDED` | `E_RECIPIENT_SUPPRESSED` | anything else it raises, plus the three `e_*` codes |
+| `smtp` | `cloudflare:sockets`, implicit TLS on 465 or STARTTLS on 587, AUTH PLAIN or LOGIN | 5xx on `MAIL FROM`, or refused credentials | 4xx on `MAIL FROM` or on a `RCPT TO` | 5xx on a `RCPT TO`, naming the address | 5xx on `DATA`, or any other unexpected reply |
+| `ses` | SES v2 `SendEmail` with raw content, SigV4-signed | `MailFromDomainNotVerified` | `Throttling`, `TooManyRequestsException`, `LimitExceeded`, `SendingPaused`, or HTTP 429 | `AccountSuppressionList`, or a suppression error | `MessageRejected` and every other failure |
+| `resend` | `POST https://api.resend.com/emails` | 422 naming the from domain | 429 | — | every other 4xx and 5xx |
+
+The `smtp` and `ses` transports serialize the message themselves: RFC 5322 headers folded at 78
+columns with RFC 2047 encoded words for non-ASCII, `multipart/alternative` for a text and html
+pair, `multipart/mixed` with base64 attachments, and a generated `Message-ID` of
+`<ulid@sending-domain>` when the caller set none. That id is what a send returns and what threading
+matches on. The `resend` transport passes its own `Message-ID` header for the same reason, since
+the id Resend returns is not an RFC one.
 
 ## Status codes
 
@@ -726,6 +762,52 @@ cases the fields read per recipient are `Final-Recipient`, `Action`, `Status` an
 `Diagnostic-Code`. A `failed` action with a `5.x.x` status is a hard bounce; a `4.x.x` status or a
 `delayed` action is a soft one; anything else is not treated as a bounce. Nothing about detection
 can fail an ingest: a report that cannot be read is stored as an ordinary message.
+
+A provider that reports bounces out of band rather than as mail posts them to
+`POST /v1/inbound/bounces` instead, which writes the same list under the `provider` reason and
+source.
+
+### Inbound
+
+Two endpoints a mail provider calls instead of Cloudflare Email Routing. Neither takes an API key
+and neither is rate limited by `RATE`; both are authenticated by `INBOUND_SECRET`, sent as
+`Authorization: Bearer <secret>` or `x-inbound-secret: <secret>` and compared in constant time. A
+missing, wrong, unset or under-32-character secret is 403 `forbidden`.
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/inbound` | `message/rfc822` raw, or `{envelope_from, envelope_to, raw}` | 201 `{message_id, thread_id, inbox_id}` |
+| POST | `/inbound/bounces` | an SES SNS notification, a Resend webhook, or `{provider, address, kind, detail?, from}` | `{provider, inbox_id, recorded, confirmed}` |
+
+`POST /inbound` runs exactly the ingest `email()` runs, so quotas, spam scoring, attachment
+screening, threading, labels, bounce detection, webhooks and the inbox waiter all behave the same.
+With a `message/rfc822` body the envelope comes from the `x-envelope-from` and `x-envelope-to`
+headers; with a JSON body `raw` is the base64 of the message. An envelope field that is not an
+address is 400 `invalid_address`, and a body that is not base64 is 400 `bad_request`. A refusal is
+400 `rejected` whose message is the SMTP reason the caller should bounce with: `550 no such
+inbox`, `550 rejected as spam`, `550 attachment type not accepted`, `552 message too large` or
+`552 quota exceeded`.
+
+`POST /inbound/bounces` reads three shapes:
+
+- an SES bounce over SNS: `{"Type": "Notification", "Message": "{...}"}` where the message is
+  `notificationType: "Bounce"` with `bounce.bounceType` `Permanent` or `Transient`,
+  `bounce.bouncedRecipients[].emailAddress` and `.diagnosticCode`, and `mail.source`;
+- a Resend webhook: `{"type": "email.bounced", "data": {"from": ..., "to": [...], "bounce":
+  {"type": "hard" | "soft"}}}`;
+- the generic `{provider, address, kind: "hard" | "soft", detail?, from}`.
+
+`from` — `mail.source`, `data.from`, or the generic field — names the sending inbox, whose account
+gets the rows; a `+tag` on it is stripped and an address no inbox owns is 404 `not_found`. Each
+bounced address becomes one suppression row with source `provider`, reason `provider` for a hard
+bounce and `soft_bounce` for a soft one, so a hard entry is never downgraded by a later soft one.
+`recorded` counts the rows written.
+
+An SNS `SubscriptionConfirmation` is answered by fetching its `SubscribeURL` once and returning
+`{confirmed: true}` with `inbox_id` null and `recorded` 0.
+
+Neither endpoint verifies a provider signature. The secret is the whole of the authentication, so
+treat it as one and rotate it like any other.
 
 ### Usage
 

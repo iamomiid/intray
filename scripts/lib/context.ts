@@ -1,3 +1,4 @@
+import type { MailTransportName } from "../../src/email/transports/secrets.ts";
 import type { CloudflareApi } from "./cloudflare.ts";
 import type { WranglerConfig } from "./config.ts";
 import { writeWranglerConfig } from "./config.ts";
@@ -24,8 +25,10 @@ export interface SetupContext {
   subdomainMode: boolean;
   operatorToken: string;
   routingMode: RoutingMode;
+  transport: MailTransportName;
   dmarcHint: string;
   routingHint: string;
+  transportHint: string;
 }
 
 export interface Outcome {

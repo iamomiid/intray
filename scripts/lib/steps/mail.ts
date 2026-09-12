@@ -1,3 +1,4 @@
+import { TRANSPORT_SECRETS } from "../../../src/email/transports/secrets.ts";
 import type { CfRequest } from "../cloudflare.ts";
 import { expectEnvelope, formatApiErrors, getEnvelope } from "../cloudflare.ts";
 import { configVars, readWranglerConfig } from "../config.ts";
@@ -15,7 +16,7 @@ import {
   waitUntilClean,
 } from "../dns.ts";
 import { SetupError } from "../errors.ts";
-import { zoneCandidates } from "../parse.ts";
+import { parseSecretNames, zoneCandidates } from "../parse.ts";
 import { log } from "../runtime.ts";
 import { wrangler } from "../wrangler.ts";
 
@@ -169,7 +170,45 @@ async function addSubdomainRecords(
   return true;
 }
 
+async function runMailTransport(context: SetupContext, step: string): Promise<Outcome> {
+  const config = readWranglerConfig(context.configPath);
+  const vars = configVars(config);
+  if (vars.MAIL_TRANSPORT === context.transport) {
+    return skipped(`MAIL_TRANSPORT already ${context.transport}`);
+  }
+  vars.MAIL_TRANSPORT = context.transport;
+  saveConfig(context, config);
+  wrangler(step, ["deploy"], context.root);
+  return done(`MAIL_TRANSPORT ${context.transport}, redeployed`);
+}
+
+function putCommands(names: readonly string[]): string {
+  return names.map((name) => `pnpm wrangler secret put ${name}`).join("; ");
+}
+
+async function runTransportSecrets(context: SetupContext, step: string): Promise<Outcome> {
+  const required = TRANSPORT_SECRETS[context.transport];
+  if (required.length === 0) {
+    return skipped(`the ${context.transport} transport needs no secrets`);
+  }
+  const list = wrangler(step, ["secret", "list", "--format", "json"], context.root);
+  const present = parseSecretNames(list.output);
+  const missing = required.filter((name) => !present.includes(name));
+  if (missing.length === 0) {
+    return done(`${required.join(", ")} set`);
+  }
+  context.transportHint = `${context.transport} needs ${missing.join(", ")}: ${putCommands(missing)}`;
+  return skipped(`missing ${missing.join(", ")}; set with ${putCommands(missing)}`);
+}
+
+function skippedForTransport(context: SetupContext, surface: string): Outcome {
+  return skipped(`MAIL_TRANSPORT is ${context.transport}; ${surface}`);
+}
+
 async function runEmailRouting(context: SetupContext, step: string): Promise<Outcome> {
+  if (context.transport !== "cloudflare") {
+    return skippedForTransport(context, "inbound mail arrives at POST /v1/inbound");
+  }
   const cf = requireApi(context, step).step(step, "Email Routing Rules Edit");
   const zone = context.zoneId;
   const changed: string[] = [];
@@ -249,6 +288,9 @@ async function onboardSendingSubdomain(
 }
 
 async function runEmailSending(context: SetupContext, step: string): Promise<Outcome> {
+  if (context.transport !== "cloudflare") {
+    return skippedForTransport(context, "outbound mail goes through that transport");
+  }
   const cf = requireApi(context, step).step(step, "Email Sending");
   const zone = context.zoneId;
   const domain = context.args.domain;
@@ -363,6 +405,8 @@ async function runMailDomain(context: SetupContext, step: string): Promise<Outco
 }
 
 export const mailSteps: Step[] = [
+  defineStep("Mail transport", runMailTransport),
+  defineStep("Transport secrets", runTransportSecrets),
   defineStep("Zone", runZone),
   defineStep("Email Routing", runEmailRouting),
   defineStep("Email Sending", runEmailSending),

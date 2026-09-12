@@ -7,12 +7,13 @@ import { insertInbox } from "../src/db/inboxes";
 import { getMessage } from "../src/db/messages";
 import { getThread } from "../src/db/threads";
 import { type InboundResult, ingestInbound } from "../src/email/inbound";
+import type { OutboundMessage } from "../src/email/transport";
 import type { Env } from "../src/env";
 import { AppError } from "../src/lib/errors";
 import { OUTBOUND_MAX_ATTACHMENTS, OUTBOUND_MAX_BYTES } from "../src/lib/limits";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
-import { resetDatabase } from "./support";
+import { fakeTransport, resetDatabase } from "./support";
 
 const ACCOUNT_ID = "acc_outbound";
 const INBOX_ID = "agent@intray.example";
@@ -21,21 +22,12 @@ const OWNER_EMAIL = "owner@example.com";
 interface Fixture {
   principal: Principal;
   unverified: Principal;
-  calls: EmailMessageBuilder[];
+  calls: OutboundMessage[];
   outbox: Env;
 }
 
 function bytes(text: string): Uint8Array {
   return new TextEncoder().encode(text.replace(/\r?\n/g, "\r\n"));
-}
-
-function fakeEmail(sink: EmailMessageBuilder[], messageId = "<out-1@intray.example>"): SendEmail {
-  return {
-    send: (builder: EmailMessage | EmailMessageBuilder): Promise<EmailSendResult> => {
-      sink.push(builder as EmailMessageBuilder);
-      return Promise.resolve({ messageId });
-    },
-  };
 }
 
 function throwingEmail(code: string): SendEmail {
@@ -80,7 +72,7 @@ async function seedInbox(): Promise<Fixture> {
     createdAt: 1,
   });
   const verified = await markAccountVerified(env.DB, ACCOUNT_ID, 2);
-  const calls: EmailMessageBuilder[] = [];
+  const transport = fakeTransport();
   return {
     principal: {
       account: verified ?? account,
@@ -94,8 +86,8 @@ async function seedInbox(): Promise<Fixture> {
       pending: false,
       scopes: ["*"],
     },
-    calls,
-    outbox: withEmail(fakeEmail(calls)),
+    calls: transport.sent,
+    outbox: { ...env, MAIL: transport },
   };
 }
 
@@ -113,14 +105,15 @@ it("sends a message and stores the outbound row", async () => {
   });
 
   expect(calls).toHaveLength(1);
-  const builder = calls[0];
-  expect(builder?.from).toEqual({ name: "Agent", email: INBOX_ID });
-  expect(builder?.to).toEqual(["bob@example.com"]);
-  expect(builder?.cc).toEqual(["carol@example.com"]);
-  expect(builder?.subject).toBe("Status please");
-  expect(builder?.text).toBe("Any update?");
-  expect(builder?.headers).toBeUndefined();
-  expect(builder?.attachments).toBeUndefined();
+  const sent = calls[0];
+  expect(sent?.from).toEqual({ name: "Agent", email: INBOX_ID });
+  expect(sent?.to).toEqual(["bob@example.com"]);
+  expect(sent?.cc).toEqual(["carol@example.com"]);
+  expect(sent?.subject).toBe("Status please");
+  expect(sent?.text).toBe("Any update?");
+  expect(sent?.headers).toEqual({});
+  expect(sent?.attachments).toEqual([]);
+  expect(sent?.bcc).toEqual([]);
 
   expect(message.direction).toBe("outbound");
   expect(message.rfc_message_id).toBe("out-1@intray.example");
@@ -166,10 +159,10 @@ it("stores outbound attachments in r2", async () => {
   expect(object).not.toBeNull();
   await expect(object?.text()).resolves.toBe("hello bytes");
 
-  const builder = calls[0];
-  expect(builder?.attachments).toHaveLength(1);
-  expect(builder?.attachments?.[0]?.disposition).toBe("attachment");
-  expect(builder?.attachments?.[0]?.type).toBe("text/plain");
+  const sent = calls[0];
+  expect(sent?.attachments).toHaveLength(1);
+  expect(sent?.attachments?.[0]?.filename).toBe("note.txt");
+  expect(sent?.attachments?.[0]?.contentType).toBe("text/plain");
 });
 
 it("replies in the parent thread with threading headers", async () => {
@@ -181,11 +174,11 @@ it("replies in the parent thread with threading headers", async () => {
     text: "On it.",
   });
 
-  const builder = calls[0];
-  expect(builder?.to).toEqual(["alice@example.com"]);
-  expect(builder?.subject).toBe("Re: Quarterly status");
-  expect(builder?.headers?.["In-Reply-To"]).toBe("<plain-001@example.com>");
-  expect(builder?.headers?.References).toBe("<plain-001@example.com>");
+  const sent = calls[0];
+  expect(sent?.to).toEqual(["alice@example.com"]);
+  expect(sent?.subject).toBe("Re: Quarterly status");
+  expect(sent?.headers?.["In-Reply-To"]).toBe("<plain-001@example.com>");
+  expect(sent?.headers?.References).toBe("<plain-001@example.com>");
 
   expect(reply.thread_id).toBe(parentRow?.thread_id);
   expect(reply.in_reply_to).toBe("plain-001@example.com");
@@ -236,8 +229,8 @@ it("sends from a subaddressed own address and labels the row with the tag", asyn
     text: "Attached.",
   });
 
-  const builder = calls[0];
-  expect(builder?.from).toEqual({ name: "Agent", email: "agent+invoices@intray.example" });
+  const sent = calls[0];
+  expect(sent?.from).toEqual({ name: "Agent", email: "agent+invoices@intray.example" });
 
   expect(message.labels).toEqual(["sent", "invoices"]);
   expect(message.from).toEqual({ address: "agent+invoices@intray.example", name: "Agent" });
@@ -373,10 +366,10 @@ it("carries the parent references forward and excludes the inbox from reply_all"
     reply_all: true,
   });
 
-  const builder = calls[0];
-  expect(builder?.to).toEqual(["alice@example.com", "dave@example.com", "bob@example.com"]);
-  expect(builder?.subject).toBe("Re: Quarterly status");
-  expect(builder?.headers?.References).toBe("<chain-001@example.com> <chain-002@example.com>");
+  const sent = calls[0];
+  expect(sent?.to).toEqual(["alice@example.com", "dave@example.com", "bob@example.com"]);
+  expect(sent?.subject).toBe("Re: Quarterly status");
+  expect(sent?.headers?.References).toBe("<chain-001@example.com> <chain-002@example.com>");
   expect(reply.references).toEqual(["chain-001@example.com", "chain-002@example.com"]);
 });
 
@@ -404,7 +397,7 @@ it("omits threading headers when the parent has no message id", async () => {
     text: "Who is this?",
   });
 
-  expect(calls[0]?.headers).toBeUndefined();
+  expect(calls[0]?.headers).toEqual({});
   expect(reply.in_reply_to).toBeNull();
   expect(reply.references).toEqual([]);
 });
@@ -418,17 +411,17 @@ it("forwards a message with its quoted body and attachments", async () => {
     text: "See below.",
   });
 
-  const builder = calls[0];
-  expect(builder?.subject).toBe("Fwd: Report and pixel");
-  expect(builder?.to).toEqual(["dave@example.com"]);
-  expect(builder?.text).toContain("See below.");
-  expect(builder?.text).toContain("---------- Forwarded message ----------");
-  expect(builder?.text).toContain("From: Carol Example <carol@example.com>");
-  expect(builder?.text).toContain("Subject: Report and pixel");
-  expect(builder?.text).toContain(`To: ${INBOX_ID}`);
-  expect(builder?.text).toContain("Hello rich world");
-  expect(builder?.attachments).toHaveLength(2);
-  expect(builder?.attachments?.map((attachment) => attachment.filename)).toEqual([
+  const sent = calls[0];
+  expect(sent?.subject).toBe("Fwd: Report and pixel");
+  expect(sent?.to).toEqual(["dave@example.com"]);
+  expect(sent?.text).toContain("See below.");
+  expect(sent?.text).toContain("---------- Forwarded message ----------");
+  expect(sent?.text).toContain("From: Carol Example <carol@example.com>");
+  expect(sent?.text).toContain("Subject: Report and pixel");
+  expect(sent?.text).toContain(`To: ${INBOX_ID}`);
+  expect(sent?.text).toContain("Hello rich world");
+  expect(sent?.attachments).toHaveLength(2);
+  expect(sent?.attachments?.map((attachment) => attachment.filename)).toEqual([
     "note.txt",
     "pixel.png",
   ]);

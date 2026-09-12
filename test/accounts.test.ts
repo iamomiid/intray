@@ -26,6 +26,14 @@ interface FakeEmail {
   sent: SentEmail[];
 }
 
+function recipient(to: EmailMessageBuilder["to"]): string {
+  if (typeof to === "string") {
+    return to;
+  }
+  const [first] = Array.isArray(to) ? to : [];
+  return typeof first === "string" ? first : "";
+}
+
 function fakeEmail(options: { failing?: boolean } = {}): FakeEmail {
   const sent: SentEmail[] = [];
   const binding: SendEmail = {
@@ -35,7 +43,7 @@ function fakeEmail(options: { failing?: boolean } = {}): FakeEmail {
       }
       if ("subject" in message) {
         sent.push({
-          to: typeof message.to === "string" ? message.to : "",
+          to: recipient(message.to),
           subject: message.subject,
           text: message.text ?? "",
           html: message.html ?? "",

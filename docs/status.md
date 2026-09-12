@@ -10,13 +10,15 @@ What is built, and what a contributor needs to know before touching it. Design r
 | scaffold | done | pnpm, `wrangler.jsonc`, tsconfig, biome with the `lint/no-let.grit` plugin, vitest-in-workerd |
 | ci | done | `.github/workflows/ci.yml` on pull requests and `main`: lint, typecheck, tests, forbidden-identifier check, gitleaks |
 | db | done | one module per table plus `rows.ts` and `index.ts`; keyset pagination |
-| lib | done | `address`, `hash`, `otp`, `pagination`, `limits`, `time`, `rfc`, `errors`, `ids` |
+| lib | done | `address`, `hash`, `otp`, `pagination`, `limits`, `time`, `rfc`, `errors`, `ids`, `sigv4` |
 | accounts, keys, OTP | done | signup, verify, me, authenticate, key create/list/revoke; pending keys for repeat signup; `ALLOWED_SIGNUP_EMAILS` |
 | operator token | done | `src/core/operator.ts`; `OPERATOR_TOKEN` resolves to `acc_operator`, checked before the key-hash lookup |
 | inboxes | done | create, get, list, delete with R2 cleanup, plus `requireInbox` |
 | inbound | done | `src/email/{inbound,threading,parse}.ts`; `email()` stores to D1 and R2 |
 | routing | done | `src/core/routing.ts`, `src/lib/cloudflare.ts`, `migrations/0008_routing.sql`; `ROUTING_MODE` is `catch_all` by default, `per_inbox` gives every inbox its own Email Routing rule created before the row and removed before the row, the setup's Routing steps write the vars, the `ROUTING_API_TOKEN` secret and reconcile the zone's rules against the deployment's inboxes |
-| outbound | done | recipient normalization, send/reply/forward builders, limit checks, the pre-send suppression check, send-error mapping |
+| transports | done | `src/email/transport.ts`, `src/email/transports/`; `MAIL_TRANSPORT` picks `cloudflare`, the default, `smtp` over `cloudflare:sockets`, `ses` over SigV4-signed SES v2, or `resend` over its HTTP API, all behind one `MailTransport.send(OutboundMessage)`; `transports/mime.ts` serializes RFC 5322 for `smtp` and `ses` and `src/lib/sigv4.ts` signs for `ses`; every transport maps its rejections onto the same four errors, so `src/core` and both adapters are unchanged |
+| inbound over http | done | `src/core/inbound.ts`, `src/http/routes/inbound.ts`, `src/email/notifications.ts`; `POST /v1/inbound` takes raw MIME or JSON from any provider through the same `ingestInbound`, and `POST /v1/inbound/bounces` takes SES-over-SNS, Resend and generic bounce notifications onto the suppression list, both behind `INBOUND_SECRET` |
+| outbound | done | recipient normalization, send/reply/forward builders producing an `OutboundMessage`, limit checks, the pre-send suppression check, send-error mapping |
 | core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments`, `suppressions`, `orgs`, `audit`, `oauth` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
 | schemas | done | `src/schemas/`, one module per resource plus `objects.ts`; the MCP tools' `inputSchema` and the OpenAPI document both read from it, and `test/schemas.test.ts` parses a serialized row of each kind against its schema |
@@ -95,10 +97,29 @@ What is built, and what a contributor needs to know before touching it. Design r
   `Final-Recipient`, `Action` and `Status` fields is stored as an ordinary message and suppresses
   nothing, so the list under-reports rather than over-blocks. The shape Cloudflare's own bounce mail
   arrives in has not been verified against a live zone.
-- The suppression list is only fed by bounce mail that reaches an inbox on this deployment and by
-  `POST /v1/suppressions`. The `provider` reason and source are reserved for the transports of
-  roadmap item 2, which will feed the same table from SES over SNS, Resend webhooks and DSN mail at
-  the inbound adapter; nothing writes them yet.
+- The suppression list is fed by bounce mail that reaches an inbox on this deployment, by
+  `POST /v1/suppressions`, and by `POST /v1/inbound/bounces`, which writes the `provider` reason
+  and source. Nothing reads a provider's own suppression list, so an address a provider is already
+  refusing is only learned about when it tells us.
+- No transport has been exercised against a real provider. `smtp`, `ses` and `resend` are covered
+  by unit tests against a scripted socket and a stubbed `fetch`, which prove the command sequence,
+  the signature and the error mapping but not that a real server accepts the bytes. Verify one
+  provider end to end before a deployment depends on it, and expect the first find to be in the
+  MIME the serializer produces rather than in the protocol around it.
+- Neither inbound endpoint verifies a provider signature: no SNS `SigningCertURL` check, no Resend
+  `svix` header check. `INBOUND_SECRET` is the whole of the authentication, so anyone holding it
+  can inject mail into any inbox on the deployment and suppress any address on the account that
+  owns the named sending inbox. An SNS `SubscriptionConfirmation` is confirmed by fetching whatever
+  `SubscribeURL` it carries, which is a request the caller chooses; nothing else is done with the
+  response.
+- `POST /v1/inbound` is not rate limited by `RATE`, so a leaked `INBOUND_SECRET` is bounded only by
+  the account quotas the ingest already enforces.
+- A transport other than `cloudflare` still expects the mail domain to be a zone in the logged-in
+  Cloudflare account, because the setup's Zone step and the routing steps are unchanged; only the
+  Email Routing and Email Sending steps are skipped.
+- SPF, DKIM and DMARC for a non-Cloudflare transport are the provider's business and nothing in the
+  Worker checks them. The `smtp` transport in particular signs nothing: whatever the submission
+  server does is what arrives.
 - The send binding keeps its own suppression list, which is not readable and not synchronized with
   this one. A send that passes our check can still come back `recipient_suppressed` from the
   binding, and releasing an address here does not release it there.
@@ -108,10 +129,10 @@ What is built, and what a contributor needs to know before touching it. Design r
   than at this Worker, so the DSN goes to Cloudflare and is never delivered here for
   `detectBounce` to read. Cloudflare keeps its own account-level suppression list from those
   bounces, readable at `GET /accounts/{account}/email/sending/suppressions`; mirroring it into the
-  `suppressions` table under the `provider` reason and source is planned work and is not
-  implemented. Until it is, the bounce half of the deliverability summary only counts DSN mail an
-  inbox actually receives, which is mail sent by another transport or addressed to the domain by
-  someone else.
+  `suppressions` table is planned work and is not implemented. Until it is, the bounce half of the
+  deliverability summary counts DSN mail an inbox actually receives plus whatever a provider posts
+  to `POST /v1/inbound/bounces`, which is the path an `smtp`, `ses` or `resend` deployment uses and
+  the Cloudflare transport has no equivalent of.
 - DMARC visibility is aggregate reports only. Forensic (`ruf`) reports are not parsed and nothing
   sends them anyway on most receivers, and an aggregate report is a day behind and rounds to whole
   messages, so it says how the domain is authenticated overall and never why one message failed.
@@ -185,6 +206,14 @@ What is built, and what a contributor needs to know before touching it. Design r
   2026-08-22, while `wrangler.jsonc` declares a later one. `vitest.config.ts` overrides
   `miniflare.compatibilityDate` to 2026-08-22 for tests. Remove that override once the pool ships a
   newer runtime, and re-check that nothing depends on behavior gated between the two dates.
+- The `smtp` transport is tested against a scripted fake socket: `smtpTransport(settings, connect)`
+  takes the `cloudflare:sockets` `connect` as a parameter defaulting to the real one, and the suite
+  passes a socket whose `readable` replays one reply per read and whose `writable` records the
+  commands. Nothing in the suite opens a socket, and a test that adds a recipient has to add a
+  `250` for its `RCPT TO` or the replies shift and the failure looks like a `DATA` rejection.
+- Suites that assert on an outbound message pass their own transport through `{...env, MAIL: fake}`
+  and read the `OutboundMessage`; `test/support.ts` has `fakeTransport()` for it. The `EMAIL` fakes
+  are still valid and still used, because `cloudflare` is the transport the suite pins.
 - Tests set `remoteBindings: false` because the `send_email` binding is declared `remote: true`,
   which would otherwise make vitest open an authenticated remote proxy session. The local stand-in
   accepts `send(EmailMessageBuilder)`, logs the message, writes the bodies to a temp file, and
@@ -210,9 +239,10 @@ What is built, and what a contributor needs to know before touching it. Design r
   `test/support.ts` exports `resetDatabase(db)`; call it in `beforeEach` of any suite that writes.
   It does not clean up R2 objects.
 - `vitest.config.ts` pins `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`, the
-  three `QUOTA_*` vars, both `SPAM_*` thresholds, `ROUTING_MODE`, `CLOUDFLARE_ZONE_ID`,
-  `WORKER_NAME`, `OPERATOR_TOKEN` and
-  `ADMIN_SECRET` in the miniflare bindings, so changing the deployment vars in `wrangler.jsonc`
+  three `QUOTA_*` vars, both `SPAM_*` thresholds, `ROUTING_MODE`, `MAIL_TRANSPORT`,
+  `CLOUDFLARE_ZONE_ID`,
+  `WORKER_NAME`, `OPERATOR_TOKEN`, `ADMIN_SECRET` and
+  `INBOUND_SECRET` in the miniflare bindings, so changing the deployment vars in `wrangler.jsonc`
   cannot move the suite. `test/spam.test.ts` asserts exact scores against the pinned
   `SPAM_LABEL_THRESHOLD` of 50 and `SPAM_REJECT_THRESHOLD` of 90, and the suites that need other
   thresholds pass `{...env, SPAM_REJECT_THRESHOLD: "0"}` per test rather than moving the pins. HTTP and MCP suites must use the operator-token constant from
@@ -232,6 +262,10 @@ What is built, and what a contributor needs to know before touching it. Design r
   two places must be the same binding. `signup_body` and the MCP `signup` input are the one const;
   writing an equivalent `z.object({...})` in either place would inline it instead of `$ref`ing the
   component.
+- `scripts/lib/` imports `src/email/transports/secrets.ts` for the transport names and their
+  secret lists, which is the one place a setup module reaches into `src/`. That file holds data and
+  no imports on purpose: Node strips its types and loads it, and anything it imported would have to
+  load under Node as well.
 - `pnpm setup` runs pnpm's own built-in `setup` command, not the repo script. Invoke it as
   `pnpm run setup`.
 - `scripts/` has no `@types/node`; `scripts/node.d.ts` declares only the `node:*` shapes used.

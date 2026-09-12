@@ -2,7 +2,7 @@ import { parseAddressArray, parseStringArray } from "../core/serialize";
 import type { AttachmentRow, InboxRow, MessageRow } from "../db/rows";
 import type { Env } from "../env";
 import { isValidEmail, normalizeAddress } from "../lib/address";
-import { AppError, badRequest, tooManyRequests } from "../lib/errors";
+import { badRequest } from "../lib/errors";
 import { base64UrlDecode } from "../lib/hash";
 import {
   OUTBOUND_MAX_ATTACHMENTS,
@@ -10,22 +10,15 @@ import {
   OUTBOUND_MAX_RECIPIENTS,
 } from "../lib/limits";
 import { normalizeRfcMessageId } from "../lib/rfc";
+import type { DecodedAttachment, OutboundMessage, OutboundSender } from "./transport";
+import { selectTransport } from "./transports/index";
+
+export type { DecodedAttachment, OutboundMessage, OutboundSender } from "./transport";
 
 export interface OutboundAttachment {
   filename: string;
   content_type: string;
   content: string;
-}
-
-export interface DecodedAttachment {
-  filename: string;
-  contentType: string;
-  content: Uint8Array;
-}
-
-export interface OutboundSender {
-  name: string | null;
-  email: string;
 }
 
 export interface SendInput {
@@ -58,7 +51,7 @@ export interface ForwardInput {
 }
 
 export interface BuiltMessage {
-  builder: EmailMessageBuilder;
+  message: OutboundMessage;
   to: string[];
   cc: string[];
   bcc: string[];
@@ -86,12 +79,6 @@ interface ComposeInput {
   attachments: DecodedAttachment[];
   inReplyTo: string | null;
   references: string[];
-}
-
-interface DestinationFields {
-  to?: string[];
-  cc?: string[];
-  bcc?: string[];
 }
 
 const FORWARD_SEPARATOR = "---------- Forwarded message ----------";
@@ -186,15 +173,6 @@ export function decodeAttachments(input: OutboundAttachment[] | undefined): Deco
   return input.map(decodeAttachment);
 }
 
-export function toEmailAttachment(attachment: DecodedAttachment): EmailAttachment {
-  return {
-    disposition: "attachment",
-    filename: attachment.filename,
-    type: attachment.contentType,
-    content: attachment.content,
-  };
-}
-
 function compose(input: ComposeInput): BuiltMessage {
   const to = normalizeRecipients(input.to);
   const cc = normalizeRecipients(input.cc);
@@ -227,35 +205,21 @@ function compose(input: ComposeInput): BuiltMessage {
     throw badRequest("text or html is required");
   }
 
-  const destinations: DestinationFields = {};
-  if (to.length > 0) {
-    destinations.to = to;
-  }
-  if (cc.length > 0) {
-    destinations.cc = cc;
-  }
-  if (bcc.length > 0) {
-    destinations.bcc = bcc;
-  }
-
-  const builder = {
-    from:
-      input.from.name === null || input.from.name.length === 0
-        ? input.from.email
-        : { name: input.from.name, email: input.from.email },
-    subject: input.subject,
-    ...destinations,
-    ...(text === null ? {} : { text }),
-    ...(html === null ? {} : { html }),
-    ...(input.replyTo === null ? {} : { replyTo: input.replyTo }),
-    ...(Object.keys(input.headers).length === 0 ? {} : { headers: input.headers }),
-    ...(input.attachments.length === 0
-      ? {}
-      : { attachments: input.attachments.map(toEmailAttachment) }),
-  } as EmailMessageBuilder;
-
   return {
-    builder,
+    message: {
+      from: input.from,
+      to,
+      cc,
+      bcc,
+      replyTo: input.replyTo,
+      subject: input.subject,
+      text,
+      html,
+      headers: input.headers,
+      attachments: input.attachments,
+      inReplyTo: input.inReplyTo,
+      references: input.references,
+    },
     to,
     cc,
     bcc,
@@ -433,53 +397,6 @@ export async function buildForward(
   });
 }
 
-function errorCode(error: unknown): string | null {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
-    return null;
-  }
-  const code = (error as { code: unknown }).code;
-  return typeof code === "string" ? code : null;
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.length > 0 ? error.message : fallback;
-}
-
-const BAD_REQUEST_CODES: readonly string[] = [
-  "E_TOO_MANY_RECIPIENTS",
-  "E_CONTENT_TOO_LARGE",
-  "E_HEADER_NOT_ALLOWED",
-];
-
-async function sendOrMapError(env: Env, builder: EmailMessageBuilder): Promise<EmailSendResult> {
-  try {
-    return await env.EMAIL.send(builder);
-  } catch (error) {
-    const code = errorCode(error);
-    if (code === "E_SENDER_NOT_VERIFIED") {
-      throw new AppError(
-        503,
-        "sender_not_verified",
-        errorMessage(error, "the sending domain is not verified"),
-      );
-    }
-    if (code === "E_RECIPIENT_SUPPRESSED") {
-      throw badRequest(
-        errorMessage(error, "a recipient is on the provider's suppression list"),
-        "recipient_suppressed",
-      );
-    }
-    if (code === "E_RATE_LIMIT_EXCEEDED") {
-      throw tooManyRequests(errorMessage(error, "send rate limit exceeded"));
-    }
-    if (code !== null && BAD_REQUEST_CODES.includes(code)) {
-      throw badRequest(errorMessage(error, "the message was rejected"), code.toLowerCase());
-    }
-    throw error;
-  }
-}
-
-export async function send(env: Env, builder: EmailMessageBuilder): Promise<string | null> {
-  const result = await sendOrMapError(env, builder);
-  return normalizeRfcMessageId(result.messageId);
+export async function send(env: Env, message: OutboundMessage): Promise<string | null> {
+  return normalizeRfcMessageId(await selectTransport(env).send(message));
 }

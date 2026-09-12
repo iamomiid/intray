@@ -4,6 +4,7 @@ export * from "./common";
 export * from "./deliverability";
 export * from "./domains";
 export * from "./drafts";
+export * from "./inbound";
 export * from "./inboxes";
 export * from "./keys";
 export * from "./messages";
