@@ -182,7 +182,7 @@ const ERROR_DESCRIPTIONS: Record<number, string> = {
   409: "conflict, inbox_taken",
   429: "too_many_requests, quota_exceeded",
   500: "internal_error",
-  503: "sender_not_verified",
+  503: "sender_not_verified, routing_unavailable",
 };
 
 const PARAMETER_DESCRIPTIONS: Record<string, string> = {
@@ -240,7 +240,7 @@ const ROUTES: readonly RouteSpec[] = [
     bodyRequired: true,
     status: 201,
     result: jsonContent(signupResult),
-    errors: [400, 403, 429],
+    errors: [400, 403, 429, 503],
   },
   {
     method: "post",
@@ -445,7 +445,7 @@ const ROUTES: readonly RouteSpec[] = [
     bodyRequired: true,
     status: 201,
     result: jsonContent(inboxObject),
-    errors: [400, 403, 404, 409],
+    errors: [400, 403, 404, 409, 503],
   },
   {
     method: "get",
@@ -486,7 +486,7 @@ const ROUTES: readonly RouteSpec[] = [
     body: createInboxBody,
     status: 201,
     result: jsonContent(inboxObject),
-    errors: [400, 403, 409],
+    errors: [400, 403, 409, 503],
   },
   {
     method: "get",
@@ -510,7 +510,7 @@ const ROUTES: readonly RouteSpec[] = [
     params: inboxParams,
     status: 200,
     result: jsonContent(deletedObject),
-    errors: [404],
+    errors: [404, 503],
   },
   {
     method: "get",

@@ -95,11 +95,16 @@ export const usageObject = z.strictObject({
   limits: usageLimitsObject.describe("a null limit is unlimited"),
 });
 
+export const inboxRouting = z.enum(["rule", "catch_all"]);
+
 export const inboxObject = z.strictObject({
   inbox_id: z.string(),
   username: z.string(),
   domain: z.string(),
   display_name: z.string().nullable(),
+  routing: inboxRouting.describe(
+    "how mail reaches this inbox: its own routing rule, or the zone catch-all",
+  ),
   created_at: z.number(),
 });
 
@@ -279,6 +284,7 @@ export const ERROR_CODES = [
   "quota_exceeded",
   "internal_error",
   "sender_not_verified",
+  "routing_unavailable",
 ] as const;
 
 export const errorEnvelope = z.strictObject({

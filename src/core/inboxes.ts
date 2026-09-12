@@ -27,6 +27,7 @@ import {
   requireFullScope,
   scopedInboxIds,
 } from "./principal";
+import { createRoutingRule, deleteRoutingRule } from "./routing";
 import { type InboxObject, toInbox } from "./serialize";
 import { recordStorageDelta } from "./usage";
 
@@ -90,12 +91,14 @@ export async function createInbox(
   if (existing !== null) {
     throw new AppError(409, "inbox_taken", "inbox already exists");
   }
+  const routingRuleId = await createRoutingRule(env, inboxId);
   const row = await insertInbox(env.DB, {
     inboxId,
     accountId: principal.account.id,
     username,
     domain,
     displayName: optionalText(input.display_name),
+    routingRuleId,
     createdAt: now(),
   });
   return toInbox(row);
@@ -150,6 +153,7 @@ export async function deleteInbox(
   inboxId: string,
 ): Promise<DeletedInbox> {
   const inbox = await requireInbox(env, principal, inboxId);
+  await deleteRoutingRule(env, inbox.routing_rule_id);
   const released = await storageForInbox(env.DB, inbox.inbox_id);
   const removed = await deleteInboxRow(env.DB, principal.account.id, inbox.inbox_id);
   if (removed === null) {

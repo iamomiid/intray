@@ -15,6 +15,10 @@ export interface Env {
   QUOTA_MESSAGES_SENT_PER_MONTH?: string;
   QUOTA_MESSAGES_RECEIVED_PER_MONTH?: string;
   QUOTA_STORAGE_BYTES?: string;
+  ROUTING_MODE?: string;
+  CLOUDFLARE_ZONE_ID?: string;
+  WORKER_NAME?: string;
+  ROUTING_API_TOKEN?: string;
   OPERATOR_TOKEN?: string;
   ADMIN_SECRET?: string;
 }
@@ -25,12 +29,36 @@ export interface Quotas {
   storageBytes: number | null;
 }
 
+export type RoutingMode = "catch_all" | "per_inbox";
+
+export interface RoutingConfig {
+  mode: RoutingMode;
+  zoneId: string;
+  workerName: string;
+}
+
 export interface Config {
   domains: string[];
   inboxLimit: number;
   publicUrl: string;
   allowedSignupEmails: string[];
   quotas: Quotas;
+  routing: RoutingConfig;
+}
+
+export const DEFAULT_WORKER_NAME = "intray";
+
+function text(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function routing(env: Env): RoutingConfig {
+  const worker = text(env.WORKER_NAME);
+  return {
+    mode: text(env.ROUTING_MODE) === "per_inbox" ? "per_inbox" : "catch_all",
+    zoneId: text(env.CLOUDFLARE_ZONE_ID),
+    workerName: worker === "" ? DEFAULT_WORKER_NAME : worker,
+  };
 }
 
 function splitList(raw: unknown): string[] {
@@ -63,5 +91,6 @@ export function config(env: Env): Config {
       messagesReceivedPerMonth: quota(env.QUOTA_MESSAGES_RECEIVED_PER_MONTH),
       storageBytes: quota(env.QUOTA_STORAGE_BYTES),
     },
+    routing: routing(env),
   };
 }

@@ -4,6 +4,7 @@ import {
   parseArgs,
   parseBucketNames,
   parseD1Databases,
+  parseD1Rows,
   parseDatabaseId,
   parseDeployUrl,
   parseEnvFile,
@@ -141,6 +142,46 @@ describe("parseArgs", () => {
     const args = parseArgs(["--help"]);
     expect(args.help).toBe(true);
     expect(args.errors).toEqual([]);
+  });
+});
+
+describe("parseArgs routing", () => {
+  it("defaults to leaving the current mode alone", () => {
+    expect(parseArgs(["--domain", "example.com"]).routing).toBe("");
+  });
+
+  it("reads both modes in either form", () => {
+    expect(parseArgs(["--domain", "example.com", "--routing", "per_inbox"]).routing).toBe(
+      "per_inbox",
+    );
+    expect(parseArgs(["--domain=example.com", "--routing=Catch_All"]).routing).toBe("catch_all");
+  });
+
+  it("rejects any other value", () => {
+    expect(parseArgs(["--domain", "example.com", "--routing", "sometimes"]).errors).toEqual([
+      "--routing must be catch_all or per_inbox: sometimes",
+    ]);
+  });
+
+  it("requires a value", () => {
+    expect(parseArgs(["--domain", "example.com", "--routing"]).errors).toEqual([
+      "--routing requires a value",
+    ]);
+  });
+});
+
+describe("parseD1Rows", () => {
+  it("reads the rows out of a wrangler d1 execute --json payload", () => {
+    const output = `Executing on remote database\n${JSON.stringify([
+      { results: [{ inbox_id: "one@example.com", routing_rule_id: null }], success: true },
+    ])}`;
+
+    expect(parseD1Rows(output)).toEqual([{ inbox_id: "one@example.com", routing_rule_id: null }]);
+  });
+
+  it("answers with no rows for output it cannot read", () => {
+    expect(parseD1Rows("no json here")).toEqual([]);
+    expect(parseD1Rows(JSON.stringify([{ success: true }]))).toEqual([]);
   });
 });
 

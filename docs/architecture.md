@@ -11,7 +11,7 @@ everything else to the Hono app, and exports the `email()` handler that Email Ro
 `queue()` handler that drains webhook deliveries.
 
 ```
-Email Routing catch-all ──► email() ──► postal-mime ──► D1 (thread and message rows)
+Email Routing rule/catch-all ──► email() ──► postal-mime ──► D1 (thread and message rows)
                                                      └─► R2 (raw .eml, attachments)
 HTTP /v1/*  (Hono)  ─┐
                      ├──► src/core/* ──► src/db/* ──► D1
@@ -35,9 +35,10 @@ Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate
 `WEBHOOKS` (a producer on the `intray-webhooks` queue, consumed by this same Worker),
 `INBOX_WAITER` (the `InboxWaiter` Durable Object namespace, optional), and the
 vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`,
-`QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` plus
-the `OPERATOR_TOKEN` and `ADMIN_SECRET` secrets. `src/env.ts` turns those into a `Config`; the two
-secrets are read from `Env` directly, since neither has a parsed form.
+`QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH`, `QUOTA_STORAGE_BYTES`,
+`ROUTING_MODE`, `CLOUDFLARE_ZONE_ID` and `WORKER_NAME` plus the `OPERATOR_TOKEN`, `ADMIN_SECRET`
+and `ROUTING_API_TOKEN` secrets. `src/env.ts` turns the vars into a `Config`; the three
+secrets are read from `Env` directly, since none has a parsed form.
 
 ## Inbound
 
@@ -66,6 +67,46 @@ Rejections are thrown as `InboundRejected` and turned into `message.setReject(re
 
 Threading has no subject-based fallback: a reply from a client that drops both `In-Reply-To` and
 `References` starts a new thread.
+
+### Routing
+
+Inbound reaches the Worker one of two ways, chosen by `ROUTING_MODE`.
+
+`catch_all`, the default, points the zone's Email Routing catch-all at the Worker. It is one rule
+for the whole zone, so the MX accepts mail for every address on the domain and the Worker is what
+rejects an unknown recipient, at step 2, with `550 no such inbox`. That is cheap to run and wrong in
+two ways: address harvesters and reputation systems see a domain that accepts everything, and the
+catch-all claims the whole zone, so no other address on the domain can be held by anything else.
+
+`per_inbox` gives every inbox its own rule: a `literal` matcher on the full address and a `worker`
+action naming `WORKER_NAME`. The domain then accepts mail only for addresses that exist, and the
+operator's own addresses on the same zone keep their own rules. `src/lib/cloudflare.ts` is the
+client — `fetch` against `/zones/{zone}/email/routing/rules`, mapping Cloudflare's error envelope
+onto an `AppError` — and `src/core/routing.ts` is the only caller. It is deliberately separate from
+`scripts/lib/cloudflare.ts`, which is the Node-side client the setup uses.
+
+`createInbox` creates the rule **before** the row and stores its id in `inboxes.routing_rule_id`, so
+a rule that cannot be created fails the create and an inbox never exists without its route; the
+reverse ordering would leave an inbox that silently receives nothing. `deleteInbox` removes the rule
+before the row, and a 404 for the rule is treated as already removed. Cloudflare caps rules per
+zone, which bounds the total inbox count across accounts; that error surfaces as 409 `conflict` with
+`inbox limit reached`, exactly as the per-account `INBOX_LIMIT` does, because from the agent's side
+it is the same fact. Missing zone id or token is 503 `routing_unavailable`.
+
+The inbox object carries `routing`, `rule` or `catch_all`, read off the column rather than off the
+mode, so an agent can see how its own inbox is actually reached.
+
+The Worker's `550 no such inbox` stays in both modes: it is the backstop for `catch_all` and for a
+stale rule that outlived its inbox.
+
+`pnpm run setup` reconciles the two sides. In `per_inbox` mode the **Routing rules** step lists the
+zone's rules and the deployment's inboxes and fixes drift both ways: it creates a rule for an inbox
+that has none, adopts the id of a rule that already exists for an inbox whose row does not know it,
+and deletes a rule that targets the Worker for an address with no inbox. Switching a live
+deployment creates the rules first and disables the catch-all last, so no address is unreachable in
+between, and because that changes how the domain's mail flows it goes through the same consent flow
+as the other irreversible steps. Switching back re-enables the catch-all and leaves the rules in
+place, which is why the switch is described as reversible.
 
 ### Attachment text
 
@@ -333,7 +374,7 @@ numbered migration.
 | `accounts` | `id` (`acc_`) | unique `email`, `verified_at` null until the OTP is exchanged |
 | `api_keys` | `id` (`key_`) | unique `key_hash`, `scopes_json` (`["*"]` in v1), `activated_at`, `revoked_at` |
 | `otps` | `account_id` | `code_hash`, `expires_at`, `attempts`; codes are never stored in the clear |
-| `inboxes` | `inbox_id` (the address) | `username` and `domain` denormalized, `display_name` |
+| `inboxes` | `inbox_id` (the address) | `username` and `domain` denormalized, `display_name`, `routing_rule_id` null in `catch_all` mode |
 | `threads` | `thread_id` (`thr_`) | `subject`, `last_message_at`, `message_count`, `participants_json` |
 | `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key` |
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |

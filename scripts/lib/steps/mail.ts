@@ -188,6 +188,12 @@ async function runEmailRouting(context: SetupContext, step: string): Promise<Out
     changed.push(`records for ${context.args.domain}`);
   }
 
+  if (context.routingMode === "per_inbox") {
+    return changed.length === 0
+      ? skipped("per-inbox rules; the catch-all is left to the Routing rules step")
+      : done(changed.join(", "));
+  }
+
   const current = await getEnvelope<CatchAllRule>(
     cf,
     `/zones/${zone}/email/routing/rules/catch_all`,

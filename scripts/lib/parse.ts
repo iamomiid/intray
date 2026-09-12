@@ -1,8 +1,13 @@
+export type RoutingMode = "catch_all" | "per_inbox";
+
+export const ROUTING_MODES: RoutingMode[] = ["catch_all", "per_inbox"];
+
 export interface ParsedArgs {
   domain: string;
   email: string;
   allowSignup: string;
   operatorToken: string;
+  routing: RoutingMode | "";
   dmarcReports: boolean;
   acceptChanges: boolean;
   yes: boolean;
@@ -31,11 +36,23 @@ export const OPERATOR_TOKEN_MIN_LENGTH = 32;
 
 export const GENERATE_OPERATOR_TOKEN = "generate";
 
+function routingValue(value: string): RoutingMode | "" {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed === "per_inbox" || trimmed === "catch_all" ? trimmed : "";
+}
+
 function applyOptionValue(parsed: ParsedArgs, name: string, value: string): void {
   if (name === "--domain") {
     parsed.domain = value.trim().toLowerCase();
   } else if (name === "--email") {
     parsed.email = value.trim().toLowerCase();
+  } else if (name === "--routing") {
+    const mode = routingValue(value);
+    if (mode === "") {
+      parsed.errors.push(`--routing must be ${ROUTING_MODES.join(" or ")}: ${value.trim()}`);
+      return;
+    }
+    parsed.routing = mode;
   } else if (name === "--operator-token") {
     const trimmed = value.trim();
     parsed.operatorToken = trimmed === "" ? GENERATE_OPERATOR_TOKEN : trimmed;
@@ -70,6 +87,7 @@ function applyArgument(argv: string[], index: number, parsed: ParsedArgs): numbe
     name !== "--domain" &&
     name !== "--email" &&
     name !== "--allow-signup" &&
+    name !== "--routing" &&
     name !== "--operator-token"
   ) {
     parsed.errors.push(`unknown argument: ${token}`);
@@ -108,6 +126,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     email: "",
     allowSignup: "",
     operatorToken: "",
+    routing: "",
     dmarcReports: false,
     acceptChanges: false,
     yes: false,
@@ -285,6 +304,21 @@ function firstPayloadIndex(output: string): number {
     return array;
   }
   return Math.min(array, object);
+}
+
+export function parseD1Rows(output: string): Record<string, unknown>[] {
+  const payload = parseJsonPayload(output);
+  const first = Array.isArray(payload) ? payload[0] : payload;
+  if (typeof first !== "object" || first === null) {
+    return [];
+  }
+  const results = (first as Record<string, unknown>).results;
+  if (!Array.isArray(results)) {
+    return [];
+  }
+  return results.filter(
+    (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
+  );
 }
 
 export function parseD1Databases(output: string): D1Summary[] {

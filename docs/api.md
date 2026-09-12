@@ -52,6 +52,10 @@ key lookup.
 | `QUOTA_MESSAGES_SENT_PER_MONTH` | per-account cap on messages sent in a UTC month, as a string. Empty, absent or `0` is unlimited |
 | `QUOTA_MESSAGES_RECEIVED_PER_MONTH` | per-account cap on messages received in a UTC month, as a string. Empty, absent or `0` is unlimited |
 | `QUOTA_STORAGE_BYTES` | per-account cap on stored bytes, as a string. Empty, absent or `0` is unlimited |
+| `ROUTING_MODE` | `catch_all`, the default, or `per_inbox`. In `per_inbox` every inbox gets its own Email Routing rule and the zone catch-all is off, so the domain accepts mail only for addresses that exist |
+| `CLOUDFLARE_ZONE_ID` | the zone the routing rules are written to. Only read in `per_inbox` mode |
+| `WORKER_NAME` | the script name a routing rule's worker action targets. Default `intray` |
+| `ROUTING_API_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put ROUTING_API_TOKEN` or by the setup when `CLOUDFLARE_API_TOKEN` is in the environment. A zone-scoped API token with Email Routing Rules Edit. Only read in `per_inbox` mode, where inbox create and delete fail 503 `routing_unavailable` without it. Put it in `.dev.vars` for `pnpm dev` |
 | `OPERATOR_TOKEN` | a **secret**, not a var. Set with `pnpm wrangler secret put OPERATOR_TOKEN` or `pnpm run setup --operator-token`, never in `wrangler.jsonc`. Authenticates the operator principal. Absent, empty, or shorter than 32 characters disables it. Put it in `.dev.vars` for `pnpm dev` |
 | `ADMIN_SECRET` | a **secret**, not a var. Set with `pnpm wrangler secret put ADMIN_SECRET`, never in `wrangler.jsonc`. Presented as `x-admin-secret` on `POST /v1/orgs` to bootstrap company mode, and used nowhere else. Absent, empty, or shorter than 32 characters disables the bootstrap. Put it in `.dev.vars` for `pnpm dev` |
 
@@ -73,7 +77,7 @@ Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm 
 | 409 | `conflict`, `inbox_taken` |
 | 429 | `too_many_requests`, `quota_exceeded` |
 | 500 | `internal_error` |
-| 503 | `sender_not_verified` |
+| 503 | `sender_not_verified`, `routing_unavailable` |
 
 `message_rejected` is returned when an unverified account tries to send to any address other than
 its own `accounts.email`. `signup_closed` is returned when `ALLOWED_SIGNUP_EMAILS` is set and the
@@ -83,6 +87,12 @@ secret is wrong or disabled, when a member calls an admin-only org endpoint, and
 to an inbox calls an account-level endpoint. `quota_exceeded` is returned when a send, reply, forward or draft
 send would pass `QUOTA_MESSAGES_SENT_PER_MONTH`; inbound mail past a quota is refused at the SMTP
 transaction with `552 quota exceeded` and never becomes an API error.
+
+`routing_unavailable` is returned in `per_inbox` mode when `CLOUDFLARE_ZONE_ID` or
+`ROUTING_API_TOKEN` is missing, or when Cloudflare refuses the rule call, on inbox create and inbox
+delete. Creation fails rather than leaving an inbox with no route. A zone that is at its
+Email Routing rule cap is reported as 409 `conflict` with `inbox limit reached`, the same as the
+per-account `INBOX_LIMIT`.
 
 The four `e_*` codes and `sender_not_verified` come from the send binding and only ever appear on a
 send, reply, forward or draft send: they are the binding's `E_RECIPIENT_SUPPRESSED`,
@@ -152,9 +162,11 @@ key id. The log is append-only; nothing updates or deletes a row.
 
 ### inbox
 
-`inbox_id` (the full address), `username`, `domain`, `display_name`, `created_at`. `display_name` is
-the From name on every message the inbox sends, so set it to something a human recipient recognizes;
-left null the From header carries the bare address.
+`inbox_id` (the full address), `username`, `domain`, `display_name`, `routing`, `created_at`.
+`display_name` is the From name on every message the inbox sends, so set it to something a human
+recipient recognizes; left null the From header carries the bare address. `routing` is `rule` when
+the inbox has its own Email Routing rule and `catch_all` when mail reaches it through the zone
+catch-all.
 
 ### thread
 
@@ -311,7 +323,10 @@ quota rather than the admin's. Members keep creating their own inboxes under the
 | DELETE | `/inboxes/:inbox_id` | — | `{deleted: true}` |
 
 `domain` must be one of `MAIL_DOMAINS` and defaults to the first. Creation fails with `conflict`
-when the account is at `INBOX_LIMIT`, and with `inbox_taken` when the address exists.
+when the account is at `INBOX_LIMIT`, and with `inbox_taken` when the address exists. In
+`per_inbox` mode the Email Routing rule is created before the row and deleted before the row, so a
+create fails with `routing_unavailable` rather than handing back an inbox no mail can reach, and a
+rule Cloudflare has already removed does not fail a delete.
 
 ### Threads
 

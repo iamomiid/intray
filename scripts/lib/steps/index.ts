@@ -3,5 +3,12 @@ import { accountSteps } from "./account.ts";
 import { deploySteps } from "./deploy.ts";
 import { mailSteps } from "./mail.ts";
 import { resourceSteps } from "./resources.ts";
+import { routingSteps } from "./routing.ts";
 
-export const steps: Step[] = [...accountSteps, ...resourceSteps, ...deploySteps, ...mailSteps];
+export const steps: Step[] = [
+  ...accountSteps,
+  ...resourceSteps,
+  ...deploySteps,
+  ...mailSteps,
+  ...routingSteps,
+];

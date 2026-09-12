@@ -5,6 +5,7 @@ import { readWranglerConfig } from "./lib/config.ts";
 import type { CredentialSource, SetupContext } from "./lib/context.ts";
 import { readApiToken, readWranglerLogin, TOKEN_PERMISSIONS } from "./lib/env.ts";
 import { SetupError } from "./lib/errors.ts";
+import type { RoutingMode } from "./lib/parse.ts";
 import { GENERATE_OPERATOR_TOKEN, parseArgs } from "./lib/parse.ts";
 import { errorMessage, indent, log, proc, readLine, terminalConsent, warn } from "./lib/runtime.ts";
 import { steps } from "./lib/steps/index.ts";
@@ -12,8 +13,8 @@ import { steps } from "./lib/steps/index.ts";
 const USAGE = `intray setup
 
   pnpm run setup --domain example.com [--email operator@example.com]
-    [--allow-signup a@example.com,b@example.com] [--operator-token [value]] [--dmarc-reports]
-    [--accept-changes] [--yes]
+    [--allow-signup a@example.com,b@example.com] [--operator-token [value]]
+    [--routing catch_all|per_inbox] [--dmarc-reports] [--accept-changes] [--yes]
 
   --domain               mail domain. Either a zone in the logged-in Cloudflare account, or a
                          subdomain of one such as agents.example.com. A subdomain leaves the
@@ -23,13 +24,18 @@ const USAGE = `intray setup
   --allow-signup         comma-separated addresses allowed to sign up; unset leaves signup open
   --operator-token       set the OPERATOR_TOKEN secret; without a value one is generated and
                          printed once. At least 32 characters when given
+  --routing              catch_all, the default, points the zone catch-all at the Worker and lets
+                         the Worker reject unknown recipients. per_inbox gives every inbox its own
+                         Email Routing rule and disables the catch-all, so the domain only accepts
+                         mail for addresses that exist. Omitted, the current ROUTING_MODE is kept
   --dmarc-reports        turn on Cloudflare DMARC Management for the zone, which collects the
                          aggregate reports. Apex zones only, and it needs an API token with
                          "DMARC Management — Edit"; the wrangler login cannot call it
   --accept-changes       approve, without asking, every change that alters existing mail or DNS:
                          enabling Email Routing on an apex, adding the subdomain routing
-                         records, replacing a catch-all rule, writing the Email Sending records,
-                         replacing an existing operator token, enabling DMARC reports
+                         records, replacing a catch-all rule, switching to per-inbox rules,
+                         writing the Email Sending records, replacing an existing operator token,
+                         enabling DMARC reports
   --yes                  do not ask for the confirmation of this plan. It never approves the
                          changes above; use --accept-changes for those
   --help                 print this
@@ -83,6 +89,7 @@ function printPlan(context: SetupContext): void {
   log(`  destination   ${context.args.email === "" ? "(none)" : context.args.email}`);
   log(`  signup        ${context.args.allowSignup === "" ? "open" : context.args.allowSignup}`);
   log(`  operator      ${operatorPlan(context.args.operatorToken)}`);
+  log(`  routing       ${context.routingMode}`);
   log(`  dmarc reports ${context.args.dmarcReports ? "enable" : "(none)"}`);
   log(`  changes       ${context.args.acceptChanges ? "accepted via --accept-changes" : "ask"}`);
   log(`  credentials   ${context.credentials}`);
@@ -128,6 +135,10 @@ function printSummary(context: SetupContext): void {
     log(`  DMARC reports — ${context.dmarcHint}`);
     log("");
   }
+  if (context.routingHint !== "") {
+    log(`  Per-inbox routing — ${context.routingHint}`);
+    log("");
+  }
   log("  Sign up:");
   log(`    curl -s -X POST ${url}/v1/agent/signup \\`);
   log("      -H 'content-type: application/json' \\");
@@ -157,6 +168,12 @@ async function main(): Promise<number> {
   const token = readApiToken(root);
   const credentials: CredentialSource =
     token !== "" ? "api token" : readWranglerLogin() === null ? "none" : "wrangler login";
+  const routingMode: RoutingMode =
+    args.routing !== ""
+      ? args.routing
+      : config.vars?.ROUTING_MODE === "per_inbox"
+        ? "per_inbox"
+        : "catch_all";
 
   const context: SetupContext = {
     root,
@@ -164,6 +181,7 @@ async function main(): Promise<number> {
     worker,
     args,
     api: token === "" ? null : createCloudflareApi(token, "token"),
+    apiToken: token,
     credentials,
     consent: terminalConsent,
     accountId: "",
@@ -172,7 +190,9 @@ async function main(): Promise<number> {
     zoneName: "",
     subdomainMode: false,
     operatorToken: "",
+    routingMode,
     dmarcHint: "",
+    routingHint: "",
   };
 
   printPlan(context);

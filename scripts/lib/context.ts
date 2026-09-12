@@ -3,7 +3,7 @@ import type { WranglerConfig } from "./config.ts";
 import { writeWranglerConfig } from "./config.ts";
 import type { ConsentIo } from "./consent.ts";
 import { SetupError } from "./errors.ts";
-import type { ParsedArgs } from "./parse.ts";
+import type { ParsedArgs, RoutingMode } from "./parse.ts";
 import { formatFile } from "./wrangler.ts";
 
 export type CredentialSource = "api token" | "wrangler login" | "none";
@@ -14,6 +14,7 @@ export interface SetupContext {
   worker: string;
   args: ParsedArgs;
   api: CloudflareApi | null;
+  apiToken: string;
   credentials: CredentialSource;
   consent: ConsentIo;
   accountId: string;
@@ -22,7 +23,9 @@ export interface SetupContext {
   zoneName: string;
   subdomainMode: boolean;
   operatorToken: string;
+  routingMode: RoutingMode;
   dmarcHint: string;
+  routingHint: string;
 }
 
 export interface Outcome {
