@@ -6,6 +6,7 @@ import type {
   InboxRow,
   MessageRow,
   ThreadRow,
+  WebhookRow,
 } from "../db/rows";
 export interface AddressObject {
   address: string;
@@ -109,6 +110,15 @@ export interface DraftObject {
   error: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface WebhookObject {
+  webhook_id: string;
+  url: string;
+  events: string[];
+  description: string | null;
+  active: boolean;
+  created_at: number;
 }
 
 export interface MessageObject {
@@ -326,6 +336,17 @@ export function toDraft(row: DraftRow): DraftObject {
     error: row.error,
     created_at: row.created_at,
     updated_at: row.updated_at,
+  };
+}
+
+export function toWebhook(row: WebhookRow): WebhookObject {
+  return {
+    webhook_id: row.webhook_id,
+    url: row.url,
+    events: parseStringArray(row.events_json),
+    description: row.description,
+    active: row.active !== 0,
+    created_at: row.created_at,
   };
 }
 

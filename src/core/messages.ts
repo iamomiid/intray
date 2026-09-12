@@ -56,6 +56,7 @@ import { deleteObjects } from "./objects";
 import { isVerified, type Principal } from "./principal";
 import { type MessageObject, parseStringArray, toMessage } from "./serialize";
 import { groupAttachments } from "./threads";
+import { emitEvent } from "./webhooks";
 
 const MAX_BATCH_MESSAGES = 100;
 
@@ -557,6 +558,7 @@ async function persistOutbound(
     subject: built.subject,
   });
 
+  await emitEvent(env, inbox.account_id, "message.sent", inbox.inbox_id, messageId);
   return toMessage(row, attachments);
 }
 

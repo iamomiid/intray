@@ -40,6 +40,22 @@
       }
     }
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "WEBHOOKS",
+        "queue": "intray-webhooks"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "intray-webhooks",
+        "max_retries": 5,
+        "max_batch_size": 10,
+        "max_batch_timeout": 5
+      }
+    ]
+  },
   "vars": {
     "MAIL_DOMAINS": "",
     "INBOX_LIMIT": "10",

@@ -1,5 +1,6 @@
 import { type ExtractableAttachment, storeAttachmentText } from "../core/attachments";
 import { parseStringArray } from "../core/serialize";
+import { emitEvent } from "../core/webhooks";
 import { insertAttachment } from "../db/attachments";
 import { getInbox } from "../db/inboxes";
 import { insertMessage } from "../db/messages";
@@ -171,6 +172,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
     subject: parsed.subject,
   });
 
+  await emitEvent(env, inbox.account_id, "message.received", inbox.inbox_id, messageId);
   await storeAttachmentText(env.DB, extractable);
 
   return { messageId, threadId, inboxId: inbox.inbox_id };

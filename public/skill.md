@@ -188,6 +188,25 @@ best matches come first. Punctuation and words like `OR` are searched for litera
 `list_messages` with `labels`, `from`, `to`, `subject`, `since`, and `before` when you know what you
 are filtering on.
 
+Get pushed instead of polling, when you have somewhere to receive a POST. Register an https
+endpoint once and every message the account receives or sends arrives there as
+`{event, delivery_id, created_at, data}`, where `data` is the same message object the API returns.
+
+```sh
+curl -sS -X POST <PUBLIC_URL>/v1/webhooks \
+  -H 'Authorization: Bearer it_...' -H 'content-type: application/json' \
+  -d '{"url":"https://hooks.example.com/intray","events":["message.received"]}'
+```
+
+MCP: `create_webhook {"url":"https://hooks.example.com/intray"}`. The response carries a `secret`
+shown only that once: store it. Every delivery is signed, so before you trust one, recompute
+HMAC-SHA256 over `<x-intray-timestamp>.<raw body>` with that secret, hex-encode it, and check it
+equals the `x-intray-signature` header without its `v1=` prefix; reject a timestamp far from your
+clock. Answer 2xx to acknowledge; anything else is retried up to 5 times, 1, 2, 4, 8 and 16 minutes
+later, so deduplicate on `delivery_id`. `data` is read when the delivery is attempted, so it shows
+the message as it stands then. `wait_for_message` remains the simpler option when you have no
+endpoint to expose.
+
 ## Limits and rules
 
 - An unverified account may email only its own signup address. Anything else is `message_rejected`.
@@ -202,6 +221,7 @@ are filtering on.
   `page_token`; a `null` token means the end.
 - Signup is rate-limited per IP, and codes are rate-limited per account. A deployment may also
   restrict signup to a fixed list of addresses; anything else is `signup_closed`.
+- An account holds at most 10 webhooks, each on an `https` url; the eleventh is `conflict`.
 - Timestamps are integer Unix milliseconds. Field names are snake_case. `:inbox_id` must be
   URL-encoded in a path.
 

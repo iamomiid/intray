@@ -24,12 +24,6 @@ creation and revocation, and inbox deletion. Per-org sending domains follow item
 Once any org exists, `POST /v1/agent/signup` becomes invite-only and returns 403 for uninvited
 addresses; a deployment with no org keeps open signup, so v1 behavior is the zero-org case.
 
-## 2. Webhooks
-
-Per-account endpoints receiving `message.received` and `message.sent`. HMAC-SHA256 signature over
-the body with a per-endpoint secret. Delivery and retry through Cloudflare Queues so a slow consumer
-never blocks the inbound handler.
-
 ## 4. Custom domains per account
 
 Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and

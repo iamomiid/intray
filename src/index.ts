@@ -1,4 +1,5 @@
 import { drainDueDrafts } from "./core/drafts";
+import { deliverBatch, type WebhookJob } from "./core/webhooks";
 import { handleEmail } from "./email/inbound";
 import type { Env } from "./env";
 import { app } from "./http/app";
@@ -16,4 +17,7 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     await drainDueDrafts(env);
   },
-} satisfies ExportedHandler<Env>;
+  queue(batch: MessageBatch<WebhookJob>, env: Env): Promise<void> {
+    return deliverBatch(env, batch);
+  },
+} satisfies ExportedHandler<Env, WebhookJob>;

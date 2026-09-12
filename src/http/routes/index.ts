@@ -7,6 +7,7 @@ import { inboxRoutes } from "./inboxes";
 import { keyRoutes } from "./keys";
 import { messageRoutes } from "./messages";
 import { threadRoutes } from "./threads";
+import { webhookRoutes } from "./webhooks";
 
 export const routes = new Hono<AppEnv>();
 
@@ -17,3 +18,4 @@ routes.route("/", threadRoutes);
 routes.route("/", messageRoutes);
 routes.route("/", draftRoutes);
 routes.route("/", attachmentRoutes);
+routes.route("/", webhookRoutes);

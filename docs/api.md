@@ -72,9 +72,9 @@ address is not in it. `email reserved` is returned when a signup names the opera
 
 ## Status codes
 
-Creates return 201: signup, inbox create, api key create, send, reply, forward, draft create, and
-draft send. Everything else returns 200. Bodies that are entirely optional (`POST /api-keys`, `POST
-/inboxes`, `.../reply`) may be omitted and are read as `{}`.
+Creates return 201: signup, inbox create, api key create, webhook create, send, reply, forward,
+draft create, and draft send. Everything else returns 200. Bodies that are entirely optional (`POST
+/api-keys`, `POST /inboxes`, `.../reply`) may be omitted and are read as `{}`.
 
 ## Pagination
 
@@ -144,6 +144,13 @@ message lists stay small. The text is read through the attachment text endpoint 
 normalizes them. `attachments` carries `{filename, content_type, size}` only: the bytes are stored
 in R2 and never returned, so a list of drafts stays small. `sent_message_id` is the `message_id` a successful
 send produced, and `error` is `"<code>: <message>"` from the last failed send.
+
+### webhook
+
+`webhook_id`, `url`, `events`, `description`, `active`, `created_at`. `secret` is returned only in
+the response that creates it and is never readable again; a lost secret means deleting the webhook
+and registering another. A webhook belongs to the account, not to an inbox, so every inbox on the
+account feeds it.
 
 ## REST endpoints
 
@@ -364,6 +371,87 @@ statuses.
 | GET | `/inboxes/:inbox_id/messages/:message_id/attachments/:attachment_id` | attachment bytes with its `content_type` and a `content-disposition` filename |
 | GET | `/inboxes/:inbox_id/messages/:message_id/attachments/:attachment_id/text` | the extracted text as `text/plain; charset=utf-8`, `404 not_found` when `text_status` is not `extracted` |
 
+### Webhooks
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| GET | `/webhooks` | — | `{items, next_page_token: null}` of webhook, never paginated |
+| POST | `/webhooks` | `{url, events?, description?}` | webhook including `secret` |
+| GET | `/webhooks/:webhook_id` | — | webhook |
+| PATCH | `/webhooks/:webhook_id` | `{url?, events?, description?, active?}` | webhook |
+| DELETE | `/webhooks/:webhook_id` | — | `{deleted: true}` |
+
+`url` must be `https://`; anything else is 400 `bad_request`. `events` defaults to both names, and
+every entry must be `message.received` or `message.sent`; an unknown name or an empty array is 400
+`bad_request`. An account holds at most 10 webhooks and the eleventh is 409 `conflict`. `PATCH`
+leaves omitted fields alone, and `active: false` stops delivery without dropping the endpoint or
+rotating its secret.
+
+#### Event payload
+
+Every delivery is a `POST` carrying this body:
+
+```json
+{
+  "event": "message.received",
+  "delivery_id": "dlv_...",
+  "created_at": 1757345000000,
+  "data": { "message_id": "msg_...", "inbox_id": "desk-agent@agents.example.com" }
+}
+```
+
+`data` is the whole message object, the same shape `GET
+/v1/inboxes/:inbox_id/messages/:message_id` returns. `message.received` fires once an inbound
+message and its attachments are stored, `message.sent` once an outbound row is stored, which is
+after the send itself succeeded.
+
+The payload is read from storage when the delivery is attempted, not when the event fires, so it
+reflects the message as it stands at delivery time: labels changed between the two arrive with
+their later value. A message deleted before its delivery produces no delivery at all.
+
+#### Headers and signature
+
+| Header | Value |
+| --- | --- |
+| `content-type` | `application/json` |
+| `x-intray-event` | the event name |
+| `x-intray-delivery` | the `delivery_id`, the same across retries |
+| `x-intray-timestamp` | Unix **seconds** at the moment of the attempt |
+| `x-intray-signature` | `v1=<hex>` |
+
+`<hex>` is a lowercase hex HMAC-SHA256 over `<timestamp>.<raw body>` keyed with the webhook's
+`secret`. Verify it against the raw request bytes before parsing them:
+
+```ts
+async function verify(secret: string, request: Request): Promise<boolean> {
+  const body = await request.text();
+  const timestamp = request.headers.get("x-intray-timestamp") ?? "";
+  const presented = (request.headers.get("x-intray-signature") ?? "").replace(/^v1=/, "");
+  const signature = Uint8Array.from(presented.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+  const payload = new TextEncoder().encode(`${timestamp}.${body}`);
+  return crypto.subtle.verify("HMAC", key, signature, payload);
+}
+```
+
+Reject a timestamp far from your own clock to bound replay.
+
+#### Delivery and retries
+
+Deliveries run through a Cloudflare queue, so a slow endpoint never holds up inbound mail or a
+send. Each attempt times out after 10 seconds. Any 2xx acknowledges the delivery; any other status,
+a network error, or the timeout retries it, at most 5 times, after which it is dropped. The delay
+doubles with each attempt and is capped at an hour, so the five retries land 1, 2, 4, 8 and 16
+minutes after their attempt. It is set per message, which is why the queue carries no `retry_delay`
+of its own. Delivery is at-least-once and unordered: deduplicate on `delivery_id`. A delivery for a
+webhook that has since been deleted or deactivated is discarded rather than retried.
+
 ### Service endpoints
 
 | Method | Path | Returns |
@@ -423,6 +511,11 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `delete_draft` | `inbox_id`, `draft_id` |
 | `send_draft` | `inbox_id`, `draft_id` |
 | `create_api_key` | `name?` |
+| `list_webhooks` | — |
+| `create_webhook` | `url`, `events?`, `description?` |
+| `get_webhook` | `webhook_id` |
+| `update_webhook` | `webhook_id`, `url?`, `events?`, `description?`, `active?` |
+| `delete_webhook` | `webhook_id` |
 
 Every tool returns its result as JSON in a single text content block. An `AppError` becomes a tool
 error (`isError: true`) whose text is `{"error":{"code":...,"message":...}}`, matching the REST

@@ -8,20 +8,24 @@ import {
   createApiKey,
   createDraft,
   createInbox,
+  createWebhook,
   deleteDraft,
   deleteInbox,
   deleteMessage,
   deleteThread,
+  deleteWebhook,
   forwardMessage,
   getAttachment,
   getDraft,
   getInbox,
   getMessage,
   getThread,
+  getWebhook,
   listDrafts,
   listInboxes,
   listMessages,
   listThreads,
+  listWebhooks,
   me,
   replyToMessage,
   searchMessages,
@@ -31,6 +35,7 @@ import {
   updateDraft,
   updateMessageLabels,
   updateThreadLabels,
+  updateWebhook,
   verify,
   waitForMessage,
 } from "../core/index";
@@ -46,6 +51,8 @@ const inboxId = z.string().min(1);
 const messageId = z.string().min(1);
 
 const threadId = z.string().min(1);
+
+const webhookId = z.string().min(1);
 
 const labels = z.array(z.string());
 
@@ -563,6 +570,73 @@ function registerSendingTools(server: McpServer, env: Env, principal: Principal)
   );
 }
 
+function registerWebhookTools(server: McpServer, env: Env, principal: Principal): void {
+  server.registerTool(
+    "create_webhook",
+    {
+      title: "Create webhook",
+      description:
+        "Register an https endpoint to receive message.received and message.sent events for this" +
+        " account. events defaults to both. The signing secret is returned only here: store it and" +
+        " verify the x-intray-signature header on every delivery. At most 10 webhooks per account.",
+      inputSchema: z.object({
+        url: z.string(),
+        events: z.array(z.string()).optional(),
+        description: z.string().optional(),
+      }),
+    },
+    (args) => run(() => createWebhook(env, principal, args)),
+  );
+
+  server.registerTool(
+    "list_webhooks",
+    {
+      title: "List webhooks",
+      description: "List this account's webhooks, newest first. The secret is never returned.",
+      inputSchema: z.object({}),
+    },
+    () => run(() => listWebhooks(env, principal)),
+  );
+
+  server.registerTool(
+    "get_webhook",
+    {
+      title: "Get webhook",
+      description: "Fetch one webhook by id. The secret is never returned.",
+      inputSchema: z.object({ webhook_id: webhookId }),
+    },
+    (args) => run(() => getWebhook(env, principal, args.webhook_id)),
+  );
+
+  server.registerTool(
+    "update_webhook",
+    {
+      title: "Update webhook",
+      description:
+        "Change a webhook's url, events, description, or active flag. Omitted fields are left" +
+        " alone. active false stops delivery without deleting the endpoint or rotating its secret.",
+      inputSchema: z.object({
+        webhook_id: webhookId,
+        url: z.string().optional(),
+        events: z.array(z.string()).optional(),
+        description: z.string().optional(),
+        active: z.boolean().optional(),
+      }),
+    },
+    (args) => run(() => updateWebhook(env, principal, args.webhook_id, args)),
+  );
+
+  server.registerTool(
+    "delete_webhook",
+    {
+      title: "Delete webhook",
+      description: "Delete a webhook. Queued deliveries for it stop.",
+      inputSchema: z.object({ webhook_id: webhookId }),
+    },
+    (args) => run(() => deleteWebhook(env, principal, args.webhook_id)),
+  );
+}
+
 export function registerTools(server: McpServer, env: Env, principal: Principal | null): void {
   if (principal === null) {
     registerOnboardingTools(server, env);
@@ -574,4 +648,5 @@ export function registerTools(server: McpServer, env: Env, principal: Principal 
   registerMessageTools(server, env, principal);
   registerSendingTools(server, env, principal);
   registerDraftTools(server, env, principal);
+  registerWebhookTools(server, env, principal);
 }

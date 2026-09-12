@@ -1,6 +1,6 @@
 import { monotonicFactory } from "ulid";
 
-export type IdPrefix = "acc" | "key" | "thr" | "msg" | "att" | "drf";
+export type IdPrefix = "acc" | "key" | "thr" | "msg" | "att" | "drf" | "whk" | "dlv";
 
 const nextUlid = monotonicFactory();
 

@@ -1,8 +1,11 @@
+import type { WebhookJob } from "./core/webhooks";
+
 export interface Env {
   DB: D1Database;
   BUCKET: R2Bucket;
   EMAIL: SendEmail;
   RATE: RateLimit;
+  WEBHOOKS: Queue<WebhookJob>;
   MAIL_DOMAINS: string;
   INBOX_LIMIT: string;
   PUBLIC_URL: string;
