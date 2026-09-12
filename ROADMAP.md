@@ -19,19 +19,19 @@ their own quota.
 API keys gain per-inbox scopes. `api_keys.scopes_json` already exists and holds `["*"]` in v1, so
 scoping is a value change plus an enforcement check, not a migration of shape. Add an append-only
 `audit_log(id, org_id, account_id, action, target, created_at)` covering invites, provisioning, key
-creation and revocation, and inbox deletion. Per-org sending domains follow item 4.
+creation and revocation, and inbox deletion. Per-org sending domains follow item 2.
 
 Once any org exists, `POST /v1/agent/signup` becomes invite-only and returns 403 for uninvited
 addresses; a deployment with no org keeps open signup, so v1 behavior is the zero-org case.
 
-## 4. Custom domains per account
+## 2. Custom domains per account
 
 Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and
-route inbound per item 5, one rule per inbox on the account's domain. Adds
+route inbound per item 3, one rule per inbox on the account's domain. Adds
 `domains(domain, account_id, verified_at)` and drops the reliance on a single operator-wide
 `MAIL_DOMAINS`.
 
-## 5. Per-inbox routing rules
+## 3. Per-inbox routing rules
 
 The setup points the zone's Email Routing catch-all at the Worker, and the Worker rejects unknown
 recipients itself with `550 no such inbox`. The MX therefore accepts mail for every address on the
@@ -45,7 +45,7 @@ stores its id in a new `inboxes.routing_rule_id` column; `deleteInbox` removes t
 row. A failed rule creation fails the create, so an inbox never exists without its route, and a
 re-run of the setup reconciles drift in both directions: rules for inboxes that have none, and
 rules pointing at the Worker for addresses with no inbox. The Worker needs the zone id and a
-zone-scoped API token with `email_routing:write` as a secret; item 4 uses the same client. Email
+zone-scoped API token with `email_routing:write` as a secret; item 2 uses the same client. Email
 Routing caps rules per zone, which bounds the total inbox count across accounts; `createInbox`
 surfaces that as `inbox limit reached` rather than as a routing error.
 
@@ -58,7 +58,7 @@ Before the catch-all can go, verify that a `literal` rule delivers subaddressed 
 (`desk-agent+invoices@`) to the `desk-agent@` rule. If it does not, subaddressing is limited to
 `catch_all` mode until it does.
 
-## 6. Pluggable mail providers
+## 4. Pluggable mail providers
 
 Let a deployment run inbound, outbound, or both through a provider other than Cloudflare Email
 Routing and Email Sending: SMTP, Amazon SES, Resend, or any other mail API. Each provider is one
@@ -82,44 +82,44 @@ SES via SNS or S3, Resend inbound webhooks, or a self-hosted MTA can call. Rejec
 same `550` and `552` reasons in the response body so the caller can bounce.
 
 `pnpm run setup` skips the Email Routing and Email Sending steps when the transport is not
-`cloudflare` and instead checks that the chosen provider's secrets are set. Drafts (item 3) drain
+`cloudflare` and instead checks that the chosen provider's secrets are set. Drafts drain
 through the transport. The test suites' `EMAIL` fake becomes a `MailTransport` fake.
 
-## 8. Suppression list and bounce handling
+## 5. Suppression list and bounce handling
 
 Parse the bounce traffic arriving on the `cf-bounce` MX and maintain a per-account suppression list.
 Sends to a suppressed address fail fast with a clear error instead of burning quota. Transports
-from item 6 feed the same list from their own bounce notifications: SES over SNS, Resend over
+from item 4 feed the same list from their own bounce notifications: SES over SNS, Resend over
 its webhooks, SMTP from DSN mail arriving at the inbound adapter.
 
-## 9. Per-inbox Durable Object
+## 6. Per-inbox Durable Object
 
 Replace `wait_for_message`'s D1 polling with a push-style wait backed by a Durable Object per inbox.
 Lower latency and no polling cost; the D1 path stays as the fallback.
 
-## 10. OpenAPI document
+## 7. OpenAPI document
 
 Publish `GET /openapi.json` describing every `/v1` endpoint, object, and error, generated from the
 same schemas the adapters validate with, so a client can be generated from it. Generated clients
 are out of scope and are not published.
 
-## 11. OAuth for MCP clients
+## 8. OAuth for MCP clients
 
 Authorization-code flow for MCP clients that cannot set static headers, issuing tokens that map to
 the same API-key records.
 
-## 12. Spam scoring and virus scanning on inbound
+## 9. Spam scoring and virus scanning on inbound
 
 Score inbound mail and label or reject accordingly, so an agent is not handed obvious junk.
 
-## 13. Usage metrics and quotas
+## 10. Usage metrics and quotas
 
 Per-account and per-org counters for messages sent and received, storage used, and inboxes held,
 with enforceable quotas.
 
-## 14. Deliverability visibility as MCP tools
+## 11. Deliverability visibility as MCP tools
 
 Expose what an agent currently cannot see about its own sending: the DMARC aggregate reports for
 the mail domain, a reputation summary derived from them and from bounce traffic, and the
-suppression list from item 8. Read-only tools alongside the existing ones, so an agent can find out
+suppression list from item 5. Read-only tools alongside the existing ones, so an agent can find out
 that its mail is being rejected without an operator reading a dashboard for it.
