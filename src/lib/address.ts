@@ -125,6 +125,17 @@ export function isValidEmail(addr: string): boolean {
   return candidate.length > 0 && candidate.length <= 254 && EMAIL_PATTERN.test(candidate);
 }
 
+export function normalizeSignupEmail(raw: string): string {
+  const email = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!isValidEmail(email)) {
+    throw badRequest("invalid email");
+  }
+  if (isBlockedSignupDomain(splitAddress(email).domain)) {
+    throw badRequest("email domain not allowed");
+  }
+  return email;
+}
+
 export function splitAddress(addr: string): AddressParts {
   const lowered = addr.trim().toLowerCase();
   const at = lowered.lastIndexOf("@");

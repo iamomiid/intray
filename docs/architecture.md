@@ -33,7 +33,8 @@ Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate
 `WEBHOOKS` (a producer on the `intray-webhooks` queue, consumed by this same Worker), and the
 vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS`,
 `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` plus
-the `OPERATOR_TOKEN` secret. `src/env.ts` turns those into a `Config`.
+the `OPERATOR_TOKEN` and `ADMIN_SECRET` secrets. `src/env.ts` turns those into a `Config`; the two
+secrets are read from `Env` directly, since neither has a parsed form.
 
 ## Inbound
 
@@ -226,9 +227,9 @@ org.
 
 ## Auth and onboarding
 
-`signup(env, {email, username?}, {ip?})` validates and lowercases the email, refuses a blocked
-signup domain and an address outside `ALLOWED_SIGNUP_EMAILS` when that var is set, calls
-`RATE.limit({key: ip})` when the adapter passed an ip, then either reuses the account with that
+`signup(env, {email, username?}, {ip?})` validates and lowercases the email, looks the account up,
+refuses a blocked signup domain and an address outside `ALLOWED_SIGNUP_EMAILS` when that var is set,
+calls `RATE.limit({key: ip})` when the adapter passed an ip, then either reuses the account with that
 email or inserts one. A new account gets an inbox from `createInbox` and an active key. An existing
 account keeps its inboxes and its live keys and gets a **pending** key
 (`api_keys.activated_at IS NULL`). Either way an unverified account gets a fresh OTP (`insertOtp`,
@@ -240,14 +241,53 @@ revokes every other key on the account, and marks the account verified.
 
 `authenticate(env, rawKey)` checks the `OPERATOR_TOKEN` first, then hashes the presented key and
 looks it up by hash among the unrevoked, activated rows, loads the account, and returns a
-`Principal` (`{account, keyId, pending}`). It never throws. Every service function takes that
-`Principal` and scopes its queries to `principal.account.id`.
+`Principal` (`{account, keyId, pending, scopes}`). It never throws. Every service function takes
+that `Principal` and scopes its queries to `principal.account.id`.
+
+### Company mode
+
+`src/core/orgs.ts` holds the whole feature and slots above accounts rather than beside them: every
+existing row already hangs off `account_id`, so an inbox joins an org through the account that owns
+it and no v1 table changes.
+
+**Bootstrap.** `createOrg` takes the `ADMIN_SECRET` the caller presented, compares it with
+`constantTimeEqual` against the secret in `Env`, and refuses when the secret is absent, empty or
+shorter than 32 characters, exactly as `OPERATOR_TOKEN` does. It then requires a verified account,
+refuses a second org, inserts the org and makes the caller its admin. One org per deployment is a
+deliberate limit for now: it keeps `signupInvite` a single lookup and leaves the multi-org routing
+question to whoever needs it.
+
+**Roles.** `requireOrg` resolves membership and answers `not_found` for a non-member, so an org is
+invisible rather than merely closed; `requireOrgAdmin` adds the role check and answers `forbidden`
+for a member, who is inside the org and can see that it refused. The operator principal is treated
+as an admin of every org and needs no membership row, which keeps a personal deployment working
+without a signup. An admin cannot demote or remove the last admin, so an org always has one.
+
+**Invites.** An invite is a row, not a mail: `signup` is the accept path. `signupInvite` runs
+before the rate limit and, once any org exists, refuses an address that has no account and no open
+invite as `signup_closed`. The account lookup happens first and is passed in, because an address
+that already has an account must keep the repeat-signup path: that path mints a pending key and
+changes nothing until `verify` exchanges the emailed code, so gating it on an invite would only
+break lost-key recovery for a member. `ALLOWED_SIGNUP_EMAILS` still runs whenever no invite was
+found, so the zero-org case is v1 exactly. Accepting inserts the membership, stamps `accepted_at` and audits `member.joined`,
+for a new account and for an existing one that was invited later. Reusing signup means one OTP
+path, one rate limiter and one lost-key story rather than a second onboarding flow.
+
+**Provisioning.** `provisionInbox` builds a `Principal` for the target member and calls the same
+`createInbox`, so the quota, the reserved usernames and the domain check are the member's own and
+an admin cannot mint inboxes past `INBOX_LIMIT` for someone else.
+
+**Audit.** `src/core/audit.ts` is the only writer. `recordAudit` takes an explicit org;
+`recordAccountAudit` resolves the account's membership and writes nothing when it has none, which
+is what keeps a zero-org deployment free of audit rows. It is append-only by construction: no
+update or delete helper exists, and `src/db/audit.ts` offers only an insert and a keyset list.
+Removing a member leaves their rows behind, which is the point of a log.
 
 ## MCP
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, thirty-four with one.
+registered depends on the result: three onboarding tools without a live key, forty-five with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -269,6 +309,10 @@ numbered migration.
 | `drafts` | `draft_id` (`drf_`) | `kind`, `parent_message_id`, `body_json` (attachment metadata only, bytes in R2), `send_at`, `status`, `sent_message_id`, `error`; indexed on `(inbox_id, updated_at)` and `(status, send_at)` |
 | `usage` | `(account_id, period)` | `period` is a `YYYY-MM` UTC month or the literal `all`; `messages_sent`, `messages_received`, `storage_bytes` |
 | `webhooks` | `webhook_id` (`whk_`) | `account_id`, `url`, `secret`, `events_json`, `description`, `active` |
+| `orgs` | `org_id` (`org_`) | `name`; one row per deployment for now |
+| `memberships` | `(org_id, account_id)` | `role` (`admin` or `member`), indexed on `account_id` |
+| `invites` | `invite_id` (`inv_`) | `org_id`, `email`, `role`, `invited_by`, `accepted_at` null while open; indexed on `(org_id, email)` |
+| `audit_log` | `audit_id` (`aud_`) | `org_id`, `account_id`, `action`, `target`; indexed on `(org_id, created_at)`, append-only, and `account_id` carries no foreign key so a row outlives the account |
 | `messages_fts` | `message_id` (UNINDEXED) | FTS5 index over `subject`, `text`, `from_addr`, `from_name`; `inbox_id` UNINDEXED |
 
 Everything hangs off `account_id` through its inbox, and every child row cascades on delete.
@@ -307,7 +351,7 @@ identifier is opaque and generators do produce case-sensitive tokens. A message 
 `Message-ID` stores `NULL` and can never be threaded onto, which is correct.
 
 **Ids are lowercase monotonic ULIDs with a type prefix** (`acc_`, `key_`, `thr_`, `msg_`, `att_`,
-`drf_`).
+`drf_`, `whk_`, `org_`, `inv_`, `aud_`).
 Lists order by `created_at DESC` and break ties on the id, so ids minted in the same millisecond
 must still sort in creation order.
 
@@ -350,7 +394,22 @@ signup, a reserved-username list, and `INBOX_LIMIT` per account.
 
 **A repeat signup mints a pending key rather than revoking anything.** A pending key authenticates
 nowhere except `verify`, so an attacker who knows the address cannot take an account over, and the
-owner who lost a key can still get back in by reading the emailed code.
+owner who lost a key can still get back in by reading the emailed code. An org does not close that
+path: an invite gates a new account, not an existing one.
+
+**An API key's scopes are `*` alone or a list of inboxes.** `normalizeScopes` refuses a list that
+holds `*` alongside an `inbox:` entry, so a key's reach never depends on which check reads the list
+first.
+
+**An API key's scopes are enforced in core, once.** `Principal` carries `scopes`, `authenticate`
+fills it from `api_keys.scopes_json`, and the check lives where the inbox is resolved:
+`requireInbox` in `src/core/inboxes.ts` answers `not_found` for an inbox outside the scope, so
+every message, thread, draft and attachment operation inherits it from the one call they all
+already make, and an out-of-scope inbox is indistinguishable from one that does not exist.
+Account-level functions call `requireFullScope` instead and answer `forbidden`, and `listInboxes`
+passes the scope list down as a SQL filter so a page is still a page. Enforcing it in the adapters
+would mean writing the same check twice and letting the two surfaces drift, which is the same
+reason the adapters hold no other logic.
 
 **`ALLOWED_SIGNUP_EMAILS` closes signup to a list.** A single-tenant deployment should not be an
 open relay for anyone who can reach the endpoint; empty leaves signup open.

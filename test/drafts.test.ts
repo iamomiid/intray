@@ -109,7 +109,7 @@ async function harness(email?: SendEmail): Promise<Harness> {
   const verified = await markAccountVerified(env.DB, ACCOUNT_ID, 2);
   const calls: EmailMessageBuilder[] = [];
   return {
-    principal: { account: verified ?? account, keyId: "key_drafts", pending: false },
+    principal: { account: verified ?? account, keyId: "key_drafts", pending: false, scopes: ["*"] },
     env: { ...env, EMAIL: email ?? fakeEmail(calls) },
     calls,
   };
@@ -455,7 +455,7 @@ it("keeps drafts scoped to the calling account", async () => {
   await rejectsWith(
     getDraft(
       h.env,
-      { account: stranger, keyId: "key_stranger", pending: false },
+      { account: stranger, keyId: "key_stranger", pending: false, scopes: ["*"] },
       INBOX_ID,
       "drf_scoped",
     ),

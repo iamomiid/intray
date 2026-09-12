@@ -6,6 +6,7 @@ import { draftRoutes } from "./drafts";
 import { inboxRoutes } from "./inboxes";
 import { keyRoutes } from "./keys";
 import { messageRoutes } from "./messages";
+import { orgRoutes } from "./orgs";
 import { threadRoutes } from "./threads";
 import { usageRoutes } from "./usage";
 import { webhookRoutes } from "./webhooks";
@@ -14,6 +15,7 @@ export const routes = new Hono<AppEnv>();
 
 routes.route("/", agentRoutes);
 routes.route("/", keyRoutes);
+routes.route("/", orgRoutes);
 routes.route("/", inboxRoutes);
 routes.route("/", threadRoutes);
 routes.route("/", messageRoutes);

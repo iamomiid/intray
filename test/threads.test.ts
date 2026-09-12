@@ -45,7 +45,7 @@ async function seedInbox(): Promise<Principal> {
     displayName: "Agent",
     createdAt: 1,
   });
-  return { account, keyId: "key_threads", pending: false };
+  return { account, keyId: "key_threads", pending: false, scopes: ["*"] };
 }
 
 beforeEach(async () => {
@@ -132,6 +132,7 @@ it("hides threads of an inbox the principal does not own", async () => {
     account: { id: "acc_other", email: "other@example.com", verified_at: null, created_at: 1 },
     keyId: "key_other",
     pending: false,
+    scopes: ["*"],
   };
 
   await rejectsWith(listThreads(env, stranger, INBOX_ID, {}), 404, "not_found");
@@ -215,6 +216,7 @@ it("hides thread writes from an inbox the principal does not own", async () => {
     account: { id: "acc_other", email: "other@example.com", verified_at: null, created_at: 1 },
     keyId: "key_other",
     pending: false,
+    scopes: ["*"],
   };
 
   await rejectsWith(

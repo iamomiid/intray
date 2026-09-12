@@ -18,7 +18,7 @@ import { newId } from "../lib/ids";
 import { WEBHOOK_MAX_PER_ACCOUNT, WEBHOOK_SECRET_BYTES, WEBHOOK_TIMEOUT_MS } from "../lib/limits";
 import type { Page } from "../lib/pagination";
 import { now } from "../lib/time";
-import type { Principal } from "./principal";
+import { type Principal, requireFullScope } from "./principal";
 import { type MessageObject, toMessage, toWebhook, type WebhookObject } from "./serialize";
 
 export const WEBHOOK_EVENTS = ["message.received", "message.sent"] as const;
@@ -114,6 +114,7 @@ async function requireWebhook(
   principal: Principal,
   webhookId: string,
 ): Promise<WebhookRow> {
+  requireFullScope(principal);
   const row = await getWebhookForAccount(env.DB, principal.account.id, webhookId);
   if (row === null) {
     throw notFound("webhook not found");
@@ -126,6 +127,7 @@ export async function createWebhook(
   principal: Principal,
   input: CreateWebhookInput,
 ): Promise<CreatedWebhook> {
+  requireFullScope(principal);
   const url = normalizeUrl(input.url);
   const eventsJson =
     input.events === undefined ? ALL_EVENTS_JSON : normalizeEventsJson(input.events);
@@ -147,6 +149,7 @@ export async function createWebhook(
 }
 
 export async function listWebhooks(env: Env, principal: Principal): Promise<Page<WebhookObject>> {
+  requireFullScope(principal);
   const rows = await listWebhookRows(env.DB, principal.account.id);
   return { items: rows.map(toWebhook), next_page_token: null };
 }
@@ -191,6 +194,7 @@ export async function deleteWebhook(
   principal: Principal,
   webhookId: string,
 ): Promise<DeletedWebhook> {
+  requireFullScope(principal);
   const deleted = await deleteWebhookRow(env.DB, principal.account.id, webhookId);
   if (!deleted) {
     throw notFound("webhook not found");

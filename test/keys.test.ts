@@ -17,7 +17,7 @@ import { resetDatabase } from "./support";
 
 async function principalFor(email: string): Promise<Principal> {
   const account = await insertAccount(env.DB, { id: newId("acc"), email, createdAt: now() });
-  return { account, keyId: "key_seed", pending: false };
+  return { account, keyId: "key_seed", pending: false, scopes: ["*"] };
 }
 
 async function rejectsWith(

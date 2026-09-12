@@ -20,6 +20,7 @@ export default defineConfig({
           QUOTA_MESSAGES_RECEIVED_PER_MONTH: "100",
           QUOTA_STORAGE_BYTES: "1073741824",
           OPERATOR_TOKEN: "op_test_0123456789abcdef0123456789abcdef",
+          ADMIN_SECRET: "admin_test_0123456789abcdef0123456789abcdef",
         },
       },
     }),

@@ -115,7 +115,7 @@ async function seedInbox(): Promise<Principal> {
     displayName: "Agent",
     createdAt: 1,
   });
-  return { account, keyId: "key_messages", pending: false };
+  return { account, keyId: "key_messages", pending: false, scopes: ["*"] };
 }
 
 beforeEach(async () => {

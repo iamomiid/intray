@@ -42,6 +42,7 @@ function principalFor(id: string, email: string, verifiedAt: number | null): Pri
     account: { id, email, verified_at: verifiedAt, created_at: 1 },
     keyId: `key_${id}`,
     pending: false,
+    scopes: ["*"],
   };
 }
 

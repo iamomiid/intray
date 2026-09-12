@@ -14,6 +14,7 @@ export interface Env {
   QUOTA_MESSAGES_RECEIVED_PER_MONTH?: string;
   QUOTA_STORAGE_BYTES?: string;
   OPERATOR_TOKEN?: string;
+  ADMIN_SECRET?: string;
 }
 
 export interface Quotas {

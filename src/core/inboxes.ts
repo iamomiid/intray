@@ -18,8 +18,15 @@ import {
 import { AppError, badRequest, conflict, notFound } from "../lib/errors";
 import { clampLimit, decodeCursor, type Page, page } from "../lib/pagination";
 import { now } from "../lib/time";
+import { recordAccountAudit } from "./audit";
 import { deleteObjects } from "./objects";
-import type { Principal } from "./principal";
+import {
+  allowsInbox,
+  hasFullScope,
+  type Principal,
+  requireFullScope,
+  scopedInboxIds,
+} from "./principal";
 import { type InboxObject, toInbox } from "./serialize";
 import { recordStorageDelta } from "./usage";
 
@@ -71,6 +78,7 @@ export async function createInbox(
   principal: Principal,
   input: CreateInboxInput = {},
 ): Promise<InboxObject> {
+  requireFullScope(principal);
   const domain = resolveDomain(env, optionalText(input.domain)?.toLowerCase() ?? null);
   const username = resolveUsername(optionalText(input.username));
   const count = await countInboxes(env.DB, principal.account.id);
@@ -98,7 +106,11 @@ export async function requireInbox(
   principal: Principal,
   inboxId: string,
 ): Promise<InboxRow> {
-  const row = await getInboxForAccount(env.DB, principal.account.id, normalizeAddress(inboxId));
+  const address = normalizeAddress(inboxId);
+  if (!allowsInbox(principal, address)) {
+    throw notFound("inbox not found");
+  }
+  const row = await getInboxForAccount(env.DB, principal.account.id, address);
   if (row === null) {
     throw notFound("inbox not found");
   }
@@ -123,7 +135,11 @@ export async function listInboxes(
     typeof input.page_token === "string" && input.page_token.length > 0
       ? decodeCursor(input.page_token)
       : null;
-  const rows = await listInboxRows(env.DB, principal.account.id, { limit, cursor });
+  const rows = await listInboxRows(env.DB, principal.account.id, {
+    limit,
+    cursor,
+    inboxIds: hasFullScope(principal) ? null : scopedInboxIds(principal),
+  });
   const paged = page(rows, limit, (row) => ({ at: row.created_at, id: row.inbox_id }));
   return { items: paged.items.map(toInbox), next_page_token: paged.next_page_token };
 }
@@ -141,5 +157,6 @@ export async function deleteInbox(
   }
   await recordStorageDelta(env.DB, principal.account.id, -released);
   await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys, ...removed.draftKeys]);
+  await recordAccountAudit(env, principal.account.id, "inbox.deleted", inbox.inbox_id);
   return { deleted: true };
 }

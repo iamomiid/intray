@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { authenticate } from "../core/keys";
 import { OPERATOR_KEY_ID } from "../core/operator";
+import { isOrgAdmin } from "../core/orgs";
 import type { Principal } from "../core/principal";
 import type { Env } from "../env";
 import { registerTools } from "./tools";
@@ -36,6 +37,10 @@ const AGENT_INSTRUCTIONS = [
   'comes back as a tool error whose text is {"error":{"code":...,"message":...}}.',
 ].join(" ");
 
+const ADMIN_NOTE =
+  "This account administers an org, so it also has the company tools: create_invite, list_invites," +
+  " revoke_invite, list_members, update_member, remove_member, provision_inbox and list_audit.";
+
 const OPERATOR_NOTE =
   "This connection carries the deployment's operator token, so there is no signup or verification" +
   " step: the account is already verified and may email anyone.";
@@ -51,18 +56,21 @@ function readApiKey(request: Request): string | null {
   return request.headers.get("x-api-key");
 }
 
-function instructionsFor(principal: Principal | null): string {
+function instructionsFor(principal: Principal | null, orgAdmin: boolean): string {
   if (principal === null) {
     return ONBOARDING_INSTRUCTIONS;
   }
+  const admin = orgAdmin ? ` ${ADMIN_NOTE}` : "";
   if (principal.keyId === OPERATOR_KEY_ID) {
-    return `${AGENT_INSTRUCTIONS} ${OPERATOR_NOTE}`;
+    return `${AGENT_INSTRUCTIONS} ${OPERATOR_NOTE}${admin}`;
   }
-  return AGENT_INSTRUCTIONS;
+  return `${AGENT_INSTRUCTIONS}${admin}`;
 }
 
-export function buildServer(env: Env, principal: Principal | null): McpServer {
-  const server = new McpServer(SERVER_INFO, { instructions: instructionsFor(principal) });
+export function buildServer(env: Env, principal: Principal | null, orgAdmin = false): McpServer {
+  const server = new McpServer(SERVER_INFO, {
+    instructions: instructionsFor(principal, orgAdmin),
+  });
   registerTools(server, env, principal);
   return server;
 }
@@ -73,7 +81,8 @@ export async function handleMcp(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const principal = await authenticate(env, readApiKey(request));
-  const handler = createMcpHandler(() => buildServer(env, principal), {
+  const orgAdmin = principal !== null && (await isOrgAdmin(env, principal));
+  const handler = createMcpHandler(() => buildServer(env, principal, orgAdmin), {
     route: "/mcp",
     allowedOriginHostnames: "*",
   });

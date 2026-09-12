@@ -2,28 +2,6 @@
 
 Ordered. Each item is additive; v1 data model already reserves the columns the early items need.
 
-## 1. Company mode
-
-Turn a single-person deployment into a multi-seat one without rewriting v1.
-
-Add `orgs(id, name, created_at)` and `memberships(org_id, account_id, role)` where `role` is
-`admin` or `member`. Every existing row already hangs off `account_id`, so orgs slot in above
-accounts and inboxes join to an org through the owning account.
-
-An admin bootstraps the instance by presenting `ADMIN_SECRET` (a Worker secret) once, which creates
-the first org and makes the calling account its admin. Admins invite members by email; the invite
-is delivered as an OTP over the same flow as signup, and accepting it creates the account and its
-membership. Admins provision inboxes directly to members; members create further inboxes under
-their own quota.
-
-API keys gain per-inbox scopes. `api_keys.scopes_json` already exists and holds `["*"]` in v1, so
-scoping is a value change plus an enforcement check, not a migration of shape. Add an append-only
-`audit_log(id, org_id, account_id, action, target, created_at)` covering invites, provisioning, key
-creation and revocation, and inbox deletion. Per-org sending domains follow item 2.
-
-Once any org exists, `POST /v1/agent/signup` becomes invite-only and returns 403 for uninvited
-addresses; a deployment with no org keeps open signup, so v1 behavior is the zero-org case.
-
 ## 2. Custom domains per account
 
 Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and

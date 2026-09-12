@@ -104,7 +104,7 @@ async function harness(overrides: Partial<Env> = {}): Promise<Harness> {
   const verified = await markAccountVerified(env.DB, ACCOUNT_ID, 2);
   const calls: EmailMessageBuilder[] = [];
   return {
-    principal: { account: verified ?? account, keyId: "key_usage", pending: false },
+    principal: { account: verified ?? account, keyId: "key_usage", pending: false, scopes: ["*"] },
     env: { ...env, EMAIL: fakeEmail(calls), ...overrides },
     calls,
   };
@@ -122,7 +122,7 @@ async function operatorHarness(overrides: Partial<Env> = {}): Promise<Harness> {
   });
   const calls: EmailMessageBuilder[] = [];
   return {
-    principal: { account, keyId: OPERATOR_KEY_ID, pending: false },
+    principal: { account, keyId: OPERATOR_KEY_ID, pending: false, scopes: ["*"] },
     env: { ...env, EMAIL: fakeEmail(calls), ...overrides },
     calls,
   };

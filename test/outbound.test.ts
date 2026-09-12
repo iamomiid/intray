@@ -82,11 +82,17 @@ async function seedInbox(): Promise<Fixture> {
   const verified = await markAccountVerified(env.DB, ACCOUNT_ID, 2);
   const calls: EmailMessageBuilder[] = [];
   return {
-    principal: { account: verified ?? account, keyId: "key_outbound", pending: false },
+    principal: {
+      account: verified ?? account,
+      keyId: "key_outbound",
+      pending: false,
+      scopes: ["*"],
+    },
     unverified: {
       account: { ...account, verified_at: null },
       keyId: "key_outbound",
       pending: false,
+      scopes: ["*"],
     },
     calls,
     outbox: withEmail(fakeEmail(calls)),

@@ -298,6 +298,25 @@ curl -s -H "authorization: Bearer $KEY" \
   "https://intray.example.workers.dev/v1/inboxes/agent%40agents.example.com/messages"
 ```
 
+## Company mode
+
+Optional, and only for a deployment with more than one person on it. Set `ADMIN_SECRET` as a
+secret, then bootstrap the org once from an account that has signed up and verified:
+
+```
+curl -s -X POST https://intray.example.workers.dev/v1/orgs \
+  -H "authorization: Bearer $KEY" \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -H 'content-type: application/json' \
+  -d '{"name":"Acme"}'
+```
+
+That account becomes the org's admin. From then on signup is invite-only: an admin posts to
+`/v1/orgs/<org_id>/invites` and the invited address signs up as usual, which creates its account,
+its first inbox and its membership. `ALLOWED_SIGNUP_EMAILS` no longer applies. The operator token,
+if one is set, administers the org without holding a membership. A second org is refused; there is
+one per deployment.
+
 ## Local development
 
 ```
@@ -305,10 +324,12 @@ pnpm db:migrate:local
 pnpm dev
 ```
 
-To use an operator token locally, put it in `.dev.vars`, which is gitignored:
+To use an operator token locally, put it in `.dev.vars`, which is gitignored. An admin secret for
+company mode goes in the same file:
 
 ```
 OPERATOR_TOKEN=op_local_development_token_at_least_32_chars
+ADMIN_SECRET=admin_local_development_secret_at_least_32_chars
 ```
 
 Inject an inbound message. The body must be raw RFC 5322 and must include a `Message-ID` header:
@@ -397,6 +418,14 @@ Leave `MAIL_DOMAINS` until step 9, once the domain can actually receive and send
 ```
 pnpm wrangler secret put OPERATOR_TOKEN
 ```
+
+`ADMIN_SECRET` is the other secret, needed only by a deployment that wants company mode:
+
+```
+pnpm wrangler secret put ADMIN_SECRET
+```
+
+Use at least 32 characters; a shorter value is ignored and the bootstrap stays closed.
 
 ### 6. Deploy
 

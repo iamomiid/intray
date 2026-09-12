@@ -39,6 +39,7 @@ function principalFor(verified: boolean): Principal {
     },
     keyId: "key_attachment_text",
     pending: false,
+    scopes: ["*"],
   };
 }
 
