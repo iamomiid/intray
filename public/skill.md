@@ -271,6 +271,16 @@ the deployment, and the next bounce puts it straight back. A bounce also arrives
 was addressed to, labelled `bounce`, so `list_messages {"inbox_id":"...","labels":"bounce"}` shows
 you the reports themselves.
 
+Find out whether your mail is actually landing. `GET <PUBLIC_URL>/v1/deliverability`, or MCP
+`get_deliverability {"days":30}`, returns what this deployment knows about how its sending is
+received: how many messages you sent in the window, how many bounced, the size of your suppression
+list, and the DMARC aggregate figures for the mail domain — how many messages receivers reported,
+how many authenticated, and how many were quarantined or rejected. Read `warnings` first: it names
+a bounce rate or a pass rate that is out of line, and a period no report arrived in, in plain words
+with the figures in them, and it is empty when there is nothing wrong. Call it when replies stop
+coming and you cannot tell whether nobody is answering or nobody is receiving. It is descriptive
+only: fixing a low pass rate is DNS work for your human, not something you can do through this API.
+
 ## Limits and rules
 
 - An unverified account may email only its own signup address. Anything else is `message_rejected`.

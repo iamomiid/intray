@@ -257,6 +257,23 @@ with the reason in `error`. `records` is the DNS the domain needs as Cloudflare 
 each entry is `{type, name, content, priority?, present}`, and `present` is false for a record the
 zone does not carry yet. `verified_at` is null until the domain verifies. The object never carries
 the zone id or the sending tag; they are deployment detail.
+### dmarc report
+
+`report_id`, `domain`, `org_name`, `org_email`, `external_report_id`, `begin_at`, `end_at`,
+`policy`, `message_id`, `created_at`. `GET /v1/dmarc-reports/:report_id` adds `records`.
+
+`org_name` and `external_report_id` are the reporting organization and its own id for the report,
+and are unique together: a reporter that sends the same report twice stores one row. `begin_at` and
+`end_at` are the reporting window in Unix milliseconds, converted from the seconds the report
+carries. `policy` is what the reporter saw published: `domain`, `p`, `sp`, `pct`, `adkim`, `aspf`,
+each null when the report omitted it. `message_id` is the stored message the report arrived on, so
+the original can be read with `GET /v1/inboxes/:inbox_id/messages/:message_id`.
+
+A record is `record_id`, `source_ip`, `count`, `disposition`, `dkim`, `spf`, `header_from`,
+`envelope_from` and `auth`. `count` is how many messages the reporter saw from that address,
+`disposition` what it did with them (`none`, `quarantine` or `reject`), and `dkim` and `spf` the
+aligned results it evaluated. `auth` carries the raw `dkim` and `spf` results as `{domain, result}`
+lists.
 
 ### webhook
 
@@ -748,6 +765,63 @@ Inbound mail past `QUOTA_MESSAGES_RECEIVED_PER_MONTH`, or that would push `stora
 inbox past `INBOX_LIMIT` keeps its 409 `conflict`. The operator principal is exempt from all three
 quotas, and its own usage is still counted.
 
+### Deliverability
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| GET | `/deliverability` | the summary object below |
+| GET | `/dmarc-reports` | `{items, next_page_token}` of dmarc report, newest period first |
+| GET | `/dmarc-reports/:report_id` | one dmarc report with its `records` |
+
+```json
+{
+  "period": { "from": 1757548800000, "to": 1760140800000 },
+  "sent": 120,
+  "bounced": 3,
+  "hard_bounces": 2,
+  "soft_bounces": 1,
+  "bounce_rate": 0.025,
+  "suppressed": 4,
+  "dmarc": {
+    "reports": 6,
+    "messages": 412,
+    "pass": 408,
+    "dkim_pass": 405,
+    "spf_pass": 402,
+    "quarantined": 0,
+    "rejected": 4,
+    "pass_rate": 0.9903,
+    "top_sources": [{ "source_ip": "192.0.2.10", "count": 400, "pass": 400 }]
+  },
+  "warnings": []
+}
+```
+
+`days` sets the window and defaults to 30; anything outside 1 to 365 is 400 `bad_request`.
+`period` is that window in Unix milliseconds. `sent` and `bounced` count messages created in it,
+`hard_bounces` and `soft_bounces` count suppression entries last seen in it, and `suppressed` is
+the whole list rather than the period. `bounce_rate` is `bounced` over `sent`, `pass_rate` is
+`pass` over `messages`, and both are 0 when the denominator is. `top_sources` is at most five
+sending addresses, busiest first.
+
+`warnings` names the problems in plain words: a bounce rate above 5%, a DMARC pass rate below 95%,
+and a period no aggregate report arrived in. It is empty when there is nothing to say, and it is
+descriptive, never a recommendation.
+
+**Scoping.** The operator and an org admin see the whole deployment; any other account sees its own
+sends, bounces and suppressions. The `dmarc` block is domain-level and is the same for every
+caller, because a report says nothing about which account sent the mail. The two report endpoints
+are the operator and org admins only and answer 403 `forbidden` for anyone else, since a report
+names every address sending as the domain. All three need a full-scope key.
+
+`GET /dmarc-reports` pages by `end_at` and takes `domain` to narrow the list to one served domain.
+An unknown `report_id` is 404 `not_found`.
+
+Reports are stored by ingest, not fetched: an aggregate report arriving as mail to an inbox this
+deployment serves is parsed out of its gzip or zip attachment, stored, and the message is labelled
+`dmarc` alongside `received` and `unread`. Nothing arrives until the domain's `_dmarc` record names
+an address on the domain in its `rua=`; see `docs/deploy.md`.
+
 ### Service endpoints
 
 | Method | Path | Returns |
@@ -897,6 +971,9 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `list_suppressions` | `reason?`, `limit?`, `page_token?` |
 | `add_suppression` | `address`, `detail?` |
 | `remove_suppression` | `address` |
+| `get_deliverability` | `days?` |
+| `list_dmarc_reports` | `domain?`, `limit?`, `page_token?` |
+| `get_dmarc_report` | `report_id` |
 | `list_webhooks` | — |
 | `create_webhook` | `url`, `events?`, `description?` |
 | `get_webhook` | `webhook_id` |

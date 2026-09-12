@@ -21,7 +21,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
 | schemas | done | `src/schemas/`, one module per resource plus `objects.ts`; the MCP tools' `inputSchema` and the OpenAPI document both read from it, and `test/schemas.test.ts` parses a serialized row of each kind against its schema |
 | openapi | done | `GET /openapi.json`, built in `src/http/openapi.ts` from a route table and `z.toJSONSchema`, served by `src/http/routes/openapi.ts`; `test/openapi.test.ts` compares the document against `app.routes` in both directions |
-| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 52 with one, and 401 with a `WWW-Authenticate` resource pointer for a key that resolves to nothing |
+| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 55 with one, and 401 with a `WWW-Authenticate` resource pointer for a key that resolves to nothing |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
 | batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
@@ -35,6 +35,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | usage | done | `src/core/usage.ts`, `src/db/usage.ts`, `migrations/0007_usage.sql`; upsert counters for messages sent, messages received and stored bytes, read through `GET /v1/usage` or `get_usage`, enforced as `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` |
 | oauth | done | `src/core/oauth.ts`, `src/http/routes/oauth.ts`, `src/http/oauth-pages.ts`, `migrations/0009_oauth.sql`; RFC 8414 and RFC 9728 metadata, RFC 7591 registration, an authorization-code flow with PKCE behind the existing OTP, and tokens that are ordinary `api_keys` rows |
 | spam | done | `src/email/spam.ts`, `migrations/0011_spam.sql`; every inbound message is scored from headers, identity, subject, body, list and attachment signals, labelled `spam` at `SPAM_LABEL_THRESHOLD`, refused at `SPAM_REJECT_THRESHOLD`, refused outright for an executable attachment and scored but not refused for a script attachment; `spam_score` and `spam_reasons` ride on every message object and `max_spam_score` filters a list |
+| deliverability | done | `src/core/deliverability.ts`, `src/email/dmarc.ts`, `src/db/{deliverability,dmarc}.ts`, `migrations/0013_dmarc.sql`; DMARC aggregate reports arriving as mail are decompressed, parsed and stored on ingest and the message is labelled `dmarc`, and `GET /v1/deliverability`, `GET /v1/dmarc-reports` and `GET /v1/dmarc-reports/:report_id` read them back beside the send, bounce and suppression counts |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time. Text is extracted from PDF and docx on ingest into `attachments.text`, read through `GET .../attachments/:attachment_id/text` or `get_attachment`; `text_status` rides on every attachment object |
 
 ## Limitations
@@ -101,6 +102,33 @@ What is built, and what a contributor needs to know before touching it. Design r
 - The send binding keeps its own suppression list, which is not readable and not synchronized with
   this one. A send that passes our check can still come back `recipient_suppressed` from the
   binding, and releasing an address here does not release it there.
+- Outbound bounces never reach an inbox on the Cloudflare transport, so `bounced`, `hard_bounces`
+  and `soft_bounces` read 0 on a live deployment however much mail fails. Mail sent through the
+  send binding carries a return path on `cf-bounce.<domain>`, whose MX points at Cloudflare rather
+  than at this Worker, so the DSN goes to Cloudflare and is never delivered here for
+  `detectBounce` to read. Cloudflare keeps its own account-level suppression list from those
+  bounces, readable at `GET /accounts/{account}/email/sending/suppressions`; mirroring it into the
+  `suppressions` table under the `provider` reason and source is planned work and is not
+  implemented. Until it is, the bounce half of the deliverability summary only counts DSN mail an
+  inbox actually receives, which is mail sent by another transport or addressed to the domain by
+  someone else.
+- DMARC visibility is aggregate reports only. Forensic (`ruf`) reports are not parsed and nothing
+  sends them anyway on most receivers, and an aggregate report is a day behind and rounds to whole
+  messages, so it says how the domain is authenticated overall and never why one message failed.
+- Nothing fetches DMARC reports. They are stored only when a report arrives as mail to an inbox
+  this deployment serves, which needs a `rua=` on the domain's `_dmarc` record pointing at such an
+  address; `--dmarc-reports` does not arrange that, it turns on Cloudflare's own collection into
+  the dashboard. A deployment without that record reads `reports: 0` and gets the matching warning.
+- The deliverability summary is descriptive. `warnings` names a bounce rate above 5%, a DMARC pass
+  rate below 95% and a period with no report in it, with the measured figure and the threshold in
+  the sentence, and stops there: it never recommends an action, because what to do about a low pass
+  rate depends on the domain's DNS and sending history rather than on anything this service holds.
+- The DMARC figures are domain-level and are the same for every caller, including a plain account
+  reading its own summary. A report names the sending IP, never the account, so the block cannot be
+  narrowed; only `sent`, `bounced` and the suppression counts are scoped to the caller.
+- Nothing ages `dmarc_reports` out. Reports accumulate one row per reporter per day plus a record
+  per sending address, and only an inbox, thread or message delete removes the mail they arrived
+  on, never the parsed rows.
 - Nothing ages entries out of `suppressions`. A `soft_bounce` row stays until an agent deletes it,
   and `last_seen_at` is recorded so a later policy can expire on it without another migration.
 - Nothing expires R2 raw MIME objects. They are removed only by the explicit inbox, thread and

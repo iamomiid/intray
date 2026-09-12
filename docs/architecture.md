@@ -63,10 +63,12 @@ and calls `ingestInbound(env, {envelopeFrom, envelopeTo, raw})`, which runs:
    same inbox, else a new `thr_` row whose subject and participants come from this message;
 8. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` — or
    `["received","spam"]` from step 5 — plus `bounce` when the message is a delivery status
-   notification and the recipient's tag when it can be a label, `size`, `has_attachments`,
-   `raw_key`, `spam_score` and `spam_reasons_json`, then one `insertAttachment` per stored object;
+   notification, `dmarc` when an attachment parses as an aggregate report, and the recipient's tag
+   when it can be a label, `size`, `has_attachments`, `raw_key`, `spam_score` and
+   `spam_reasons_json`, then one `insertAttachment` per stored object;
 9. `touchThread`, which bumps `last_message_at`, rewrites `participants_json`, fills a missing
-   subject, and increments `message_count`, then one suppression row per bounced address.
+   subject, and increments `message_count`, then one suppression row per bounced address and one
+   `dmarc_reports` row with its records per aggregate report.
 
 Rejections are thrown as `InboundRejected` and turned into `message.setReject(reason)` by
 `handleEmail`. Anything else propagates, so Cloudflare retries or bounces.
@@ -258,6 +260,39 @@ The bounce is not a second kind of row. It is an ordinary inbound message with o
 an agent reads it with `list_messages {"labels":"bounce"}` and the raw report is in R2 like any
 other; only the suppression list is new state.
 
+### DMARC
+
+`src/email/dmarc.ts` reads a DMARC aggregate report out of an attachment, and runs over the parsed
+attachments between step 4 and step 7 like `detectBounce` does. An attachment is a candidate when
+its content type is `application/gzip`, `application/x-gzip`, `application/gzip-compressed`,
+`application/zip` or `application/x-zip-compressed`, or when its filename ends `.gz` or `.zip`;
+anything else is skipped without being decompressed. gzip goes through `fflate`'s `gunzipSync` and
+zip through `unzipSync`, taking the first `.xml` entry. Both are size-capped before they run rather
+than after: the gzip trailer's uncompressed size and the zip entry's `originalSize` are checked
+against `DMARC_MAX_XML_BYTES`, so an archive that would expand past the cap is never inflated, and
+the compressed input itself is capped at `DMARC_MAX_INPUT_BYTES`.
+
+The XML is read by regular expressions over element names rather than by a parser, so no XML
+library is bundled for the one document shape this service reads. Elements are matched with their
+attributes and whitespace, CDATA sections are unwrapped, comments are dropped, and the five
+predefined entities plus numeric character references are decoded. A document is a report only when
+it has a `feedback` root, a `report_metadata` with an `org_name`, a `report_id` and a `date_range`,
+and a `policy_published` naming a domain; anything else yields null and the attachment is treated
+as ordinary. `date_range` is Unix seconds in the wire format and is stored as milliseconds like
+every other timestamp. At most `DMARC_MAX_RECORDS` records are read from one report.
+
+`recordDmarcReports` in `src/core/deliverability.ts` writes what it finds after the message row
+exists, so `dmarc_reports.message_id` points at the mail the report arrived on. The insert is
+`ON CONFLICT (org_name, external_report_id) DO NOTHING ... RETURNING`, so a reporter that sends the
+same report twice stores one row and the second delivery inserts no records; the message is still
+labelled `dmarc`, because it is one. Like bounce detection, none of this can fail an ingest: the
+parse is wrapped, each report is stored inside its own `try`, and a report that cannot be read is
+simply mail with an attachment.
+
+Nothing fetches reports. They arrive only if the domain's `_dmarc` record names an address on the
+domain in its `rua=` and an inbox exists to receive it; `docs/deploy.md` says what the setup does
+and does not do about that.
+
 ### Attachment text
 
 Step 9 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
@@ -435,6 +470,32 @@ Counters are per account. An org rollup, once orgs exist, is a `GROUP BY` over t
 rows for a period, which is why `period` carries its own index and why nothing here is keyed on an
 org.
 
+## Deliverability
+
+`src/core/deliverability.ts` answers one question — is this deployment's mail getting through — out
+of rows three other subsystems already write. Nothing is recomputed on a schedule and no counter is
+kept for it.
+
+`getDeliverability` runs three aggregate queries over a window that defaults to 30 days: `sent` and
+`bounced` are `SUM(CASE ...)` over `messages.labels_json` in `src/db/deliverability.ts`, so a send
+is a message labelled `sent` and a bounce is the report that came back labelled `bounce`;
+`hard_bounces`, `soft_bounces` and `suppressed` come off the `suppressions` table; the DMARC block
+is one aggregate over `dmarc_records` joined to `dmarc_reports` plus one grouped query for the top
+sources. Rows are never loaded to be counted in JavaScript, so the cost does not grow with the
+mailbox.
+
+Scope is one bind parameter, not a second query: the account filter is `(? IS NULL OR ...)`, and
+the id is null for the operator and for an org admin, who see the deployment, and the account's own
+id for everyone else. `isOrgAdmin` is the same predicate company mode uses. The DMARC figures are
+deliberately not scoped: a report says which IP sent as the domain, never which account, so
+narrowing them per account would invent a number. `listDmarcReports` and `getDmarcReport` are
+admin-only for the same reason in reverse — the records name every sender using the domain.
+
+`warnings` is the part an agent reads first: a bounce rate above `BOUNCE_RATE_WARN`, a DMARC pass
+rate below `DMARC_PASS_RATE_WARN`, and a period with no report in it. They are sentences about what
+was measured, with the figure and the threshold in them, and they never recommend an action; what
+to do about a 40% pass rate depends on facts this service does not have.
+
 ## Auth and onboarding
 
 `signup(env, {email, username?}, {ip?})` validates and lowercases the email, looks the account up,
@@ -540,7 +601,7 @@ unauthenticated tool set that `docs/api.md` promises.
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, fifty-two with one.
+registered depends on the result: three onboarding tools without a live key, fifty-five with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -589,6 +650,8 @@ numbered migration.
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |
 | `drafts` | `draft_id` (`drf_`) | `kind`, `parent_message_id`, `body_json` (attachment metadata only, bytes in R2), `send_at`, `status`, `sent_message_id`, `error`; indexed on `(inbox_id, updated_at)` and `(status, send_at)` |
 | `usage` | `(account_id, period)` | `period` is a `YYYY-MM` UTC month or the literal `all`; `messages_sent`, `messages_received`, `storage_bytes` |
+| `dmarc_reports` | `report_id` (`dmr_`) | `domain`, `org_name`, `org_email`, `external_report_id` unique with `org_name`, `begin_at`, `end_at`, `policy_json`, `message_id` of the mail it arrived on; indexed on `(domain, end_at)` |
+| `dmarc_records` | `record_id` (`dmc_`) | `report_id` cascading from `dmarc_reports`, `source_ip`, `count`, `disposition`, `dkim`, `spf`, `header_from`, `envelope_from`, `auth_json`; indexed on `report_id` |
 | `suppressions` | `(account_id, address)` | `reason` (`hard_bounce`, `soft_bounce`, `manual`, `provider`), `source` (`dsn`, `api`, `provider`), `detail`, `message_id` of the bounce report, `created_at`, `last_seen_at`; indexed on `(account_id, created_at)` |
 | `webhooks` | `webhook_id` (`whk_`) | `account_id`, `url`, `secret`, `events_json`, `description`, `active` |
 | `domains` | `domain` (the name) | `account_id`, `zone_id`, `sending_tag`, `status` (`pending`, `verified`, `failed`), `records_json`, `error`, `verified_at`; indexed on `(account_id, created_at)` |
@@ -640,7 +703,7 @@ identifier is opaque and generators do produce case-sensitive tokens. A message 
 `Message-ID` stores `NULL` and can never be threaded onto, which is correct.
 
 **Ids are lowercase monotonic ULIDs with a type prefix** (`acc_`, `key_`, `thr_`, `msg_`, `att_`,
-`drf_`, `whk_`, `org_`, `inv_`, `aud_`).
+`drf_`, `whk_`, `org_`, `inv_`, `aud_`, `dmr_`, `dmc_`).
 Lists order by `created_at DESC` and break ties on the id, so ids minted in the same millisecond
 must still sort in creation order.
 

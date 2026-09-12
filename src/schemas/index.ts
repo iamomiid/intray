@@ -1,6 +1,7 @@
 export * from "./agent";
 export * from "./attachments";
 export * from "./common";
+export * from "./deliverability";
 export * from "./domains";
 export * from "./drafts";
 export * from "./inboxes";

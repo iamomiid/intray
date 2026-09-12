@@ -10,6 +10,8 @@ const TABLES = [
   "inboxes",
   "domains",
   "suppressions",
+  "dmarc_records",
+  "dmarc_reports",
   "webhooks",
   "usage",
   "audit_log",

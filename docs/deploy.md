@@ -99,7 +99,8 @@ Flags:
   catch-all off, so the domain accepts mail only for addresses that exist and any other address on
   the zone stays free for something else. See **Per-inbox routing** below.
 - `--dmarc-reports` — optional. Turns on Cloudflare DMARC Management for the zone, which collects
-  the aggregate DMARC reports. Off without the flag. See **DMARC reports** below.
+  the aggregate DMARC reports into Cloudflare's dashboard. It does not deliver them to an inbox.
+  Off without the flag. See **DMARC reports** below.
 - `--accept-changes` — optional. Approves, without asking, every change that alters existing mail
   or DNS. See **Approvals** below.
 - `--yes` — do not ask for confirmation of the printed plan. Confirmation is also skipped when
@@ -347,6 +348,31 @@ token is worth creating only if this has to be scripted.
 With a token, the step reads the current state, skips when it is already on, and otherwise turns it
 on and reads it back to confirm. A 403 means the token is missing **Zone — DMARC Management —
 Edit**.
+
+### Getting the reports into an inbox instead
+
+`--dmarc-reports` does **not** make reports arrive in intray. The `rua=` address it adds is
+Cloudflare's own, so the reports land in Cloudflare's dashboard and nowhere else, and the `_dmarc`
+record Email Sending writes carries no `rua=` at all. The flag and the tools below are independent:
+turn on either, both or neither.
+
+To have intray store them, point a `rua=` at an address on the mail domain and let the mail arrive
+like any other:
+
+1. create an inbox to receive them, for example `dmarc@agents.example.com`;
+2. add that address to the domain's `_dmarc` TXT record, so it reads something like
+   `v=DMARC1; p=reject; rua=mailto:dmarc@agents.example.com`, keeping any `rua=` already there as a
+   comma-separated second entry;
+3. if the reporting domain differs from the mailbox domain — a `_dmarc` on the apex pointing at an
+   address on a subdomain — publish the external destination record the DMARC spec requires, a TXT
+   at `<reporting domain>._report._dmarc.<mailbox domain>` with the value `v=DMARC1`, or reporters
+   will refuse to send.
+
+Reports then arrive as ordinary mail, are parsed out of their gzip or zip attachment on ingest, and
+show up under `GET /v1/dmarc-reports` and in `GET /v1/deliverability`. The message itself is kept
+and labelled `dmarc`, so the original is always readable. Reporters send once a day, so expect the
+first report about 24 hours after the record changes, and nothing at all from receivers that saw no
+mail from the domain.
 
 ## Check the deployment
 
