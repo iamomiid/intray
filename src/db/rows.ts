@@ -99,6 +99,17 @@ export interface AttachmentRow {
   text_status: string;
 }
 
+export interface WebhookRow {
+  webhook_id: string;
+  account_id: string;
+  url: string;
+  secret: string;
+  events_json: string;
+  description: string | null;
+  active: number;
+  created_at: number;
+}
+
 export interface DeletedObjectKeys {
   rawKeys: string[];
   attachmentKeys: string[];

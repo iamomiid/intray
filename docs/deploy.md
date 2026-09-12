@@ -135,8 +135,8 @@ The six:
    and the old value cannot be read back.
 6. **Enable DMARC reports** — modifies the `_dmarc` record. Reversible.
 
-Creating D1 and R2, applying migrations, writing vars, deploying, setting an operator token that
-did not exist, and turning the Email Routing setting on for a zone in subdomain mode
+Creating D1, R2 and the queue, applying migrations, writing vars, deploying, setting an operator
+token that did not exist, and turning the Email Routing setting on for a zone in subdomain mode
 (`PATCH /zones/{zone}/email/routing`, which touches no DNS) are not asked about.
 
 ## API token instead of the login
@@ -174,20 +174,22 @@ correct prints `skipped`.
 3. **D1 database** — creates `intray` if `d1 list` does not have it, then writes the uuid into
    `wrangler.jsonc` at `d1_databases[0].database_id`.
 4. **R2 bucket** — creates `intray` if `r2 bucket list` does not have it.
-5. **Migrations** — `d1 migrations apply intray --remote`.
-6. **Vars** — sets `PUBLIC_URL` to the Worker's `workers.dev` URL, read from the account's Workers
+5. **Queue** — creates the `intray-webhooks` queue if `queues info intray-webhooks` does not find
+   it. The Worker declares a producer and a consumer on it, so a deploy fails while it is missing.
+6. **Migrations** — `d1 migrations apply intray --remote`.
+7. **Vars** — sets `PUBLIC_URL` to the Worker's `workers.dev` URL, read from the account's Workers
    subdomain, defaults `INBOX_LIMIT` to `10`, and writes `ALLOWED_SIGNUP_EMAILS` from
    `--allow-signup` or leaves the current value alone, defaulting it to `""`. `MAIL_DOMAINS` is not
-   written here; see step 14.
-7. **Deploy** — `wrangler deploy`, reads the `workers.dev` URL from the output. Deploys a second
+   written here; see step 15.
+8. **Deploy** — `wrangler deploy`, reads the `workers.dev` URL from the output. Deploys a second
    time if `PUBLIC_URL` did not already match it.
-8. **Operator token** — with `--operator-token`, checks `wrangler secret list` for `OPERATOR_TOKEN`
+9. **Operator token** — with `--operator-token`, checks `wrangler secret list` for `OPERATOR_TOKEN`
    and puts the secret over stdin unless it already exists and no explicit value was given.
    Replacing one that already exists needs approval 5. Skipped without the flag.
-9. **Zone** — looks up `--domain`, then each parent in turn, until `/zones?name=` matches. Fails
-   listing every name it tried if none is a zone in this account. When the matched zone name is not
-   the given domain the rest of the run is in **subdomain mode**.
-10. **Email Routing** — apex mode: enables routing with
+10. **Zone** — looks up `--domain`, then each parent in turn, until `/zones?name=` matches. Fails
+    listing every name it tried if none is a zone in this account. When the matched zone name is
+    not the given domain the rest of the run is in **subdomain mode**.
+11. **Email Routing** — apex mode: enables routing with
     `POST /zones/{zone}/email/routing/enable`, which adds the apex MX, SPF and DKIM records
     (approval 1). Subdomain mode: turns the setting on with
     `PATCH /zones/{zone}/email/routing {enabled, skip_wizard}` and reads it back, which writes no
@@ -198,17 +200,17 @@ correct prints `skipped`.
     be enabled in the dashboard without accepting the suggested apex records. Then it points the
     catch-all rule at the `intray` Worker (approval 3 when a different rule is already enabled).
     The catch-all is zone-level and covers the subdomain's mail too.
-11. **Email Sending** — onboards the domain as a sending subdomain, applies the DNS records
+12. **Email Sending** — onboards the domain as a sending subdomain, applies the DNS records
     (approval 4), and polls the record status every 5 s for up to 3 minutes until it is clean.
     Stops with the list of conflicting records if existing DNS is in the way. The endpoint takes an
     apex or a subdomain, so this is the same in both modes.
-12. **DMARC reports** — with `--dmarc-reports`, turns on Cloudflare DMARC Management for the zone
+13. **DMARC reports** — with `--dmarc-reports`, turns on Cloudflare DMARC Management for the zone
     (approval 6). Skipped without the flag, skipped in subdomain mode with
     `apex only; would change the zone apex`, and skipped with a message when the credentials are
     the wrangler login rather than an API token. See **DMARC reports** below.
-13. **Destination address** — with `--email`, registers it as a routing destination. Cloudflare
+14. **Destination address** — with `--email`, registers it as a routing destination. Cloudflare
     emails a verification link that has to be clicked.
-14. **Mail domain** — writes `MAIL_DOMAINS` to `--domain` exactly, subdomain included, and deploys
+15. **Mail domain** — writes `MAIL_DOMAINS` to `--domain` exactly, subdomain included, and deploys
     again if the value changed.
 
 The mail domain is written last, after the mail steps have succeeded, so a declined DNS change or a
@@ -356,7 +358,16 @@ Copy the printed `database_id` into `wrangler.jsonc` at `d1_databases[0].databas
 pnpm wrangler r2 bucket create intray
 ```
 
-### 3. Apply migrations
+### 3. Create the queue
+
+```
+pnpm wrangler queues create intray-webhooks
+```
+
+The Worker declares a producer binding and a consumer on this queue, so a deploy fails while it
+does not exist. Queues need the Workers Paid plan.
+
+### 4. Apply migrations
 
 ```
 pnpm db:migrate:remote
@@ -364,7 +375,7 @@ pnpm db:migrate:remote
 
 Use `pnpm db:migrate:local` for the local dev database.
 
-### 4. Set the vars
+### 5. Set the vars
 
 Edit `vars` in `wrangler.jsonc`:
 
@@ -373,7 +384,7 @@ Edit `vars` in `wrangler.jsonc`:
   `https://intray.example.workers.dev`.
 - `ALLOWED_SIGNUP_EMAILS` — comma-separated addresses allowed to sign up. `""` leaves signup open.
 
-Leave `MAIL_DOMAINS` until step 7, once the domain can actually receive and send.
+Leave `MAIL_DOMAINS` until step 9, once the domain can actually receive and send.
 
 `OPERATOR_TOKEN` is a secret, not a var. Never put it in `wrangler.jsonc`:
 
@@ -381,17 +392,17 @@ Leave `MAIL_DOMAINS` until step 7, once the domain can actually receive and send
 pnpm wrangler secret put OPERATOR_TOKEN
 ```
 
-### 5. Deploy
+### 6. Deploy
 
 ```
 pnpm deploy
 ```
 
-The Worker must exist before Email Routing can be pointed at it, so deploy before step 6. If
+The Worker must exist before Email Routing can be pointed at it, so deploy before step 7. If
 `PUBLIC_URL` was not known before the first deploy, set it from the URL the deploy prints and
 deploy again.
 
-### 6. Enable inbound: Email Routing
+### 7. Enable inbound: Email Routing
 
 In the Cloudflare dashboard, open the zone, then **Email** → **Email Routing**, and enable it.
 Accept the MX, SPF, and DKIM records it adds.
@@ -405,7 +416,7 @@ Then under **Routing rules**, edit the **Catch-all address**: set the action to 
 and select `intray`. Enable the catch-all rule. The catch-all is zone-level and covers the
 subdomain.
 
-### 7. Enable outbound: Email Sending
+### 8. Enable outbound: Email Sending
 
 In the same **Email** section, open **Email Sending** and onboard the sending domain. Cloudflare
 adds a `cf-bounce` MX record plus SPF, DKIM, and DMARC. Wait for the domain to report as verified.
@@ -413,7 +424,7 @@ adds a `cf-bounce` MX record plus SPF, DKIM, and DMARC. Wait for the domain to r
 Until the domain is onboarded, sends only reach addresses that are verified destination addresses
 on the account. Once it is, any local part on that domain can send.
 
-### 8. Set the mail domain
+### 9. Set the mail domain
 
 Only now set `MAIL_DOMAINS` in `wrangler.jsonc` — comma-separated, no spaces, the first entry being
 the default for new inboxes — and deploy again. Doing it last means the Worker never hands out

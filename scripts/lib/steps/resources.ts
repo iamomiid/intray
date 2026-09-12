@@ -10,6 +10,8 @@ export const DATABASE = "intray";
 
 export const BUCKET = "intray";
 
+export const QUEUE = "intray-webhooks";
+
 interface EnsuredDatabase {
   databaseId: string;
   created: boolean;
@@ -61,6 +63,15 @@ async function runR2(context: SetupContext, step: string): Promise<Outcome> {
   return done(`created bucket ${BUCKET}`);
 }
 
+async function runQueue(context: SetupContext, step: string): Promise<Outcome> {
+  const info = wrangler(step, ["queues", "info", QUEUE], context.root, { allowFailure: true });
+  if (info.status === 0) {
+    return skipped(`queue ${QUEUE} exists`);
+  }
+  wrangler(step, ["queues", "create", QUEUE], context.root);
+  return done(`created queue ${QUEUE}`);
+}
+
 async function runMigrations(context: SetupContext, step: string): Promise<Outcome> {
   const result = wrangler(step, ["d1", "migrations", "apply", DATABASE, "--remote"], context.root);
   if (/No migrations to apply/i.test(result.output)) {
@@ -72,5 +83,6 @@ async function runMigrations(context: SetupContext, step: string): Promise<Outco
 export const resourceSteps: Step[] = [
   defineStep("D1 database", runD1),
   defineStep("R2 bucket", runR2),
+  defineStep("Queue", runQueue),
   defineStep("Migrations", runMigrations),
 ];

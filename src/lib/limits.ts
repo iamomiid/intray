@@ -19,3 +19,9 @@ export const LABEL_MAX_CHARS = 64;
 export const ATTACHMENT_TEXT_MAX_INPUT_BYTES = 10 * 1024 * 1024;
 
 export const ATTACHMENT_TEXT_MAX_BYTES = 256 * 1024;
+
+export const WEBHOOK_MAX_PER_ACCOUNT = 10;
+
+export const WEBHOOK_SECRET_BYTES = 32;
+
+export const WEBHOOK_TIMEOUT_MS = 10_000;

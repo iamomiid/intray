@@ -8,13 +8,15 @@ behind it.
 One Cloudflare Worker holds every surface. `src/index.ts` routes `/mcp` to the MCP handler and
 everything else to the Hono app, and exports the `email()` handler that Email Routing calls and the
 `scheduled()` handler a one-minute cron trigger calls to drain due drafts.
+`queue()` handler that drains webhook deliveries.
 
 ```
 Email Routing catch-all ──► email() ──► postal-mime ──► D1 (thread and message rows)
                                                      └─► R2 (raw .eml, attachments)
 HTTP /v1/*  (Hono)  ─┐
                      ├──► src/core/* ──► src/db/* ──► D1
-MCP  /mcp           ─┘                └─► R2, env.EMAIL.send
+MCP  /mcp           ─┘                ├─► R2, env.EMAIL.send
+                                      └─► env.WEBHOOKS ──► queue() ──► subscriber's endpoint
 ```
 
 | Layer | Path | Role |
@@ -27,7 +29,8 @@ MCP  /mcp           ─┘                └─► R2, env.EMAIL.send
 | setup | `scripts/` | the operator command that provisions a deployment |
 | cron | `triggers.crons` in `wrangler.jsonc` | `* * * * *`, calling `scheduled()` and so `drainDueDrafts` |
 
-Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate limit), and the
+Bindings: `DB` (D1), `BUCKET` (R2), `EMAIL` (`send_email`, remote), `RATE` (rate limit),
+`WEBHOOKS` (a producer on the `intray-webhooks` queue, consumed by this same Worker), and the
 vars `MAIL_DOMAINS`, `INBOX_LIMIT`, `PUBLIC_URL`, `ALLOWED_SIGNUP_EMAILS` plus the `OPERATOR_TOKEN`
 secret. `src/env.ts` turns those into a `Config`.
 
@@ -134,6 +137,48 @@ trade: at most one send, and a stuck row an operator can see, rather than a dupl
 
 `src/email/system.ts` holds `sendOtpEmail`, the only mail the service sends on its own behalf.
 
+## Webhooks
+
+An account registers https endpoints that receive `message.received` and `message.sent`.
+`src/core/webhooks.ts` holds the whole feature and splits into three parts.
+
+**Emit.** `emitEvent(env, accountId, event, inboxId, messageId)` loads the account's active
+webhooks that name the event and enqueues one `{webhook_id, event, delivery_id, inbox_id,
+message_id}` job per webhook onto `env.WEBHOOKS`, in a single `sendBatch` when there is more than
+one. The job carries ids and not the message itself: a queue message body is capped at 128 KB, and
+a mail with a large body or an inline image would exceed it and lose the event. `ingestInbound`
+calls it once the message row, its attachments and the thread are written, resolving the account
+through the inbox row; `persistOutbound` calls it for `message.sent`. It never throws: a queue that
+will not take the job is logged and the ingest or the send finishes normally, because a
+subscriber's plumbing must not bounce mail or fail an agent's send.
+
+**Queue.** The producer binding and the consumer are the same `intray-webhooks` queue, with
+`max_retries` 5, `max_batch_size` 10 and `max_batch_timeout` 5. It sets no `retry_delay`, because
+`deliverBatch` gives each failed message its own delay. The `queue` export in `src/index.ts` hands
+the batch to `deliverBatch`.
+
+**Deliver.** `deliverJob` reloads the webhook and drops the job when it is gone or deactivated,
+then reads the message row and its attachments and serializes them with `toMessage`, dropping the
+job when the message has been deleted, since there is nothing left to report. So the payload is the
+message as it stands at delivery time, not as it was when the event fired. It builds `{event,
+delivery_id, created_at, data}`, signs `<unix seconds>.<body>` with HMAC-SHA256 over the stored
+secret, and POSTs with `x-intray-event`, `x-intray-delivery`, `x-intray-timestamp` and
+`x-intray-signature: v1=<hex>` under a 10 second `AbortSignal.timeout`. A 2xx acks and the response
+body is cancelled to release the connection; anything else throws and `deliverBatch` calls
+`message.retry({delaySeconds})` on that message alone, so one broken endpoint in a batch does not
+replay the others. `retryDelaySeconds(attempts)` is `60 * 2 ** (attempts - 1)` capped at an hour,
+which spreads the five retries over 1, 2, 4, 8 and 16 minutes.
+
+**Why Queues.** The alternative, delivering inline from the inbound handler, puts a stranger's
+endpoint on the path of every inbound message: a consumer that takes 30 seconds to answer would
+hold the SMTP transaction open, and a consumer that is down would need retry state invented in D1.
+A queue already has the durability, the batching and the backoff, and `waitUntil` has neither
+retries nor a delay.
+
+The secret is stored as written rather than hashed, unlike an API key, because HMAC needs the
+original bytes. It is returned only by the create call, so a subscriber that loses it registers
+another webhook.
+
 ## Auth and onboarding
 
 `signup(env, {email, username?}, {ip?})` validates and lowercases the email, refuses a blocked
@@ -157,7 +202,7 @@ looks it up by hash among the unrevoked, activated rows, loads the account, and 
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, twenty-eight with one.
+registered depends on the result: three onboarding tools without a live key, thirty-three with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -177,6 +222,7 @@ numbered migration.
 | `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key` |
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |
 | `drafts` | `draft_id` (`drf_`) | `kind`, `parent_message_id`, `body_json` (attachment metadata only, bytes in R2), `send_at`, `status`, `sent_message_id`, `error`; indexed on `(inbox_id, updated_at)` and `(status, send_at)` |
+| `webhooks` | `webhook_id` (`whk_`) | `account_id`, `url`, `secret`, `events_json`, `description`, `active` |
 | `messages_fts` | `message_id` (UNINDEXED) | FTS5 index over `subject`, `text`, `from_addr`, `from_name`; `inbox_id` UNINDEXED |
 
 Everything hangs off `account_id` through its inbox, and every child row cascades on delete.
@@ -269,7 +315,9 @@ checked ahead of the key-hash lookup. It is not an `api_keys` row, so it cannot 
 revoked through the API, and its address `operator@MAIL_DOMAINS[0]` is reserved against signup.
 A value absent, empty, or shorter than 32 characters disables it.
 
-**No webhooks in v1; the only realtime primitive is a long poll.** A webhook consumer has to run a
-reachable HTTPS endpoint and verify signatures, which does not match how MCP clients are deployed,
-while a bounded wait fits a tool call exactly. `wait` holds a request for up to 55 seconds, polling
-D1 every 2 seconds, and returns the first matching message or an empty result.
+**A long poll and a webhook are both first-class, and neither replaces the other.** A webhook
+consumer has to run a reachable HTTPS endpoint and verify signatures, which does not match how most
+MCP clients are deployed, so `wait` stays the primitive that fits a tool call: it holds a request
+for up to 55 seconds, polls D1 every 2 seconds, and returns the first matching message or an empty
+result. A webhook is for the deployment that does have somewhere to receive a push, and it costs
+the reading path nothing.
