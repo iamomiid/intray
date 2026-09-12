@@ -51,6 +51,7 @@ import {
   pageFromOffset,
 } from "../lib/pagination";
 import { now } from "../lib/time";
+import { waitForInbox } from "../waiter";
 import { requireInbox } from "./inboxes";
 import { applyLabelDelta, normalizeLabelDelta, normalizeLabels } from "./labels";
 import { deleteObjects } from "./objects";
@@ -289,6 +290,26 @@ export async function searchMessages(
   };
 }
 
+async function pollForMessages(
+  env: Env,
+  inboxId: string,
+  since: number,
+  deadline: number,
+  pollMs: number,
+): Promise<Page<MessageObject>> {
+  for (;;) {
+    const rows = await listMessagesSince(env.DB, inboxId, since, WAIT_BATCH);
+    if (rows.length > 0) {
+      return { items: await attachRows(env, rows), next_page_token: null };
+    }
+    const remaining = deadline - now();
+    if (remaining <= 0) {
+      return { items: [], next_page_token: null };
+    }
+    await sleep(Math.min(pollMs, remaining));
+  }
+}
+
 export async function waitForMessage(
   env: Env,
   principal: Principal,
@@ -302,17 +323,18 @@ export async function waitForMessage(
   const pollMs = options.pollMs === undefined ? WAIT_POLL_MS : Math.max(1, options.pollMs);
   const deadline = now() + timeout * 1000;
 
-  for (;;) {
-    const rows = await listMessagesSince(env.DB, inbox.inbox_id, since, WAIT_BATCH);
-    if (rows.length > 0) {
-      return { items: await attachRows(env, rows), next_page_token: null };
-    }
-    const remaining = deadline - now();
-    if (remaining <= 0) {
-      return { items: [], next_page_token: null };
-    }
-    await sleep(Math.min(pollMs, remaining));
+  const existing = await listMessagesSince(env.DB, inbox.inbox_id, since, WAIT_BATCH);
+  if (existing.length > 0) {
+    return { items: await attachRows(env, existing), next_page_token: null };
   }
+
+  const notified = await waitForInbox(env, inbox.inbox_id, deadline - now());
+  if (notified === null) {
+    return pollForMessages(env, inbox.inbox_id, since, deadline, pollMs);
+  }
+
+  const rows = await listMessagesSince(env.DB, inbox.inbox_id, since, WAIT_BATCH);
+  return { items: await attachRows(env, rows), next_page_token: null };
 }
 
 export async function getMessage(

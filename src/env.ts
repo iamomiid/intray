@@ -1,4 +1,5 @@
 import type { WebhookJob } from "./core/webhooks";
+import type { InboxWaiter } from "./waiter";
 
 export interface Env {
   DB: D1Database;
@@ -6,6 +7,7 @@ export interface Env {
   EMAIL: SendEmail;
   RATE: RateLimit;
   WEBHOOKS: Queue<WebhookJob>;
+  INBOX_WAITER?: DurableObjectNamespace<InboxWaiter>;
   MAIL_DOMAINS: string;
   INBOX_LIMIT: string;
   PUBLIC_URL: string;

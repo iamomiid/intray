@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, expect, it } from "vitest";
 import {
   batchDeleteMessages,
@@ -18,6 +18,7 @@ import { insertMessage } from "../src/db/messages";
 import { getThread, insertThread, touchThread } from "../src/db/threads";
 import { type InboundResult, ingestInbound } from "../src/email/inbound";
 import { AppError } from "../src/lib/errors";
+import type { InboxWaiter } from "../src/waiter";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
 import replyEml from "./fixtures/reply.eml?raw";
@@ -99,6 +100,21 @@ async function seed(input: SeedInput): Promise<string> {
     participantsJson: "[]",
   });
   return messageId;
+}
+
+function unavailableWaiter(): DurableObjectNamespace<InboxWaiter> {
+  return {
+    idFromName: () => ({}),
+    get: () => ({ wait: () => Promise.reject(new Error("waiter unavailable")) }),
+  } as unknown as DurableObjectNamespace<InboxWaiter>;
+}
+
+function waiterStub(): DurableObjectStub<InboxWaiter> {
+  const namespace = env.INBOX_WAITER;
+  if (namespace === undefined) {
+    throw new Error("INBOX_WAITER is not bound");
+  }
+  return namespace.get(namespace.idFromName("waiter@intray.example"));
 }
 
 async function seedInbox(): Promise<Principal> {
@@ -610,13 +626,81 @@ it("returns immediately when a message already exists after since", async () => 
 
 it("returns a message that arrives during the wait", async () => {
   const principal = await seedInbox();
+  const since = Date.now() - 1;
+  const startedAt = Date.now();
+  const pending = waitForMessage(
+    env,
+    principal,
+    INBOX_ID,
+    { since, timeout: 10 },
+    { pollMs: 30_000 },
+  );
+  await sleep(50);
+  await deliver(plainEml);
+
+  const waited = await pending;
+  expect(waited.items).toHaveLength(1);
+  expect(Date.now() - startedAt).toBeLessThan(1000);
+});
+
+it("polls when the waiter binding is absent", async () => {
+  const principal = await seedInbox();
   const since = Date.now();
-  const pending = waitForMessage(env, principal, INBOX_ID, { since, timeout: 10 }, { pollMs: 20 });
+  const pending = waitForMessage(
+    { ...env, INBOX_WAITER: undefined },
+    principal,
+    INBOX_ID,
+    { since, timeout: 10 },
+    { pollMs: 20 },
+  );
   await sleep(50);
   await seed({ id: "late", createdAt: since + 1000 });
 
   const waited = await pending;
   expect(waited.items.map((message) => message.message_id)).toEqual(["msg_late"]);
+});
+
+it("polls when the waiter rejects the call", async () => {
+  const principal = await seedInbox();
+  const since = Date.now();
+  const pending = waitForMessage(
+    { ...env, INBOX_WAITER: unavailableWaiter() },
+    principal,
+    INBOX_ID,
+    { since, timeout: 10 },
+    { pollMs: 20 },
+  );
+  await sleep(50);
+  await seed({ id: "broken", createdAt: since + 1000 });
+
+  const waited = await pending;
+  expect(waited.items.map((message) => message.message_id)).toEqual(["msg_broken"]);
+});
+
+it("resolves every pending wait on the waiter object when notified", async () => {
+  const stub = waiterStub();
+  const woken = await runInDurableObject<InboxWaiter, boolean[]>(stub, (waiter) => {
+    const first = waiter.wait(10_000);
+    const second = waiter.wait(10_000);
+    expect(waiter.waiting).toBe(2);
+    waiter.notify(Date.now());
+    return Promise.all([first, second]);
+  });
+
+  expect(woken).toEqual([true, true]);
+  await runInDurableObject<InboxWaiter, void>(stub, (waiter) => {
+    expect(waiter.waiting).toBe(0);
+  });
+});
+
+it("resolves a waiter object wait as false on timeout and keeps no timer", async () => {
+  const stub = waiterStub();
+  const woken = await runInDurableObject<InboxWaiter, boolean>(stub, (waiter) => waiter.wait(50));
+
+  expect(woken).toBe(false);
+  await runInDurableObject<InboxWaiter, void>(stub, (waiter) => {
+    expect(waiter.waiting).toBe(0);
+  });
 });
 
 it("returns no items when the wait times out", async () => {

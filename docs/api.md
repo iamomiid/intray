@@ -362,8 +362,12 @@ Because that order is not a key, `page_token` here encodes a position in the res
 a message, so a page taken while new mail arrives can shift.
 
 `wait` blocks until a message with `created_at` greater than `since` arrives, or until `timeout`
-seconds elapse, whichever comes first. `timeout` defaults to 30 and caps at 55. It polls every 2
-seconds and returns an empty `items` array on timeout.
+seconds elapse, whichever comes first. `timeout` defaults to 30 and caps at 55, and an expired wait
+returns an empty `items` array. Latency is event-driven: the ingest wakes the waiting call through a
+Durable Object held per inbox, so a message is usually returned within milliseconds of being stored.
+A deployment whose Worker has no such binding falls back to polling every 2 seconds, which changes
+nothing about the response. Only arriving mail wakes a wait; a message the caller sends itself does
+not.
 
 Inbound messages are stored with labels `["received","unread"]`, outbound with `["sent"]`. A label
 is at most 64 characters and a message carries at most 20 of them, on `PATCH` and on the batch

@@ -21,3 +21,5 @@ export default {
     return deliverBatch(env, batch);
   },
 } satisfies ExportedHandler<Env, WebhookJob>;
+
+export { InboxWaiter } from "./waiter";
