@@ -56,6 +56,11 @@ What is built, and what a contributor needs to know before touching it. Design r
   resolves to a random `messageId`, so a send can be called in tests; nothing leaves the machine,
   and delivery itself still needs `wrangler dev` and real credentials. Suites that assert on what
   was sent pass their own `EMAIL` fake through `{...env, EMAIL: fake}`.
+- D1 binds at most 100 parameters per statement, and local SQLite in the vitest pool does not
+  enforce it, so a statement that overflows the cap passes the suite and fails in production with
+  "too many SQL variables". List arguments therefore go through `json_each` on a single JSON
+  parameter, `WHERE id IN (SELECT value FROM json_each(?))` bound with `JSON.stringify(ids)`, rather
+  than a spliced `IN (?, ?, ...)`.
 - The pool does not roll D1 back between tests in a file, so writes leak from one test to the next.
   `test/support.ts` exports `resetDatabase(db)`; call it in `beforeEach` of any suite that writes.
   It does not clean up R2 objects.

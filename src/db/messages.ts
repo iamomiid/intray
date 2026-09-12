@@ -54,10 +54,6 @@ export interface MessageLabelUpdate {
   labelsJson: string;
 }
 
-function placeholders(values: string[]): string {
-  return values.map(() => "?").join(", ");
-}
-
 function unique(values: string[]): string[] {
   const seen: string[] = [];
   for (const value of values) {
@@ -171,12 +167,11 @@ export async function listMessages(
 
   const labels = filters.labels ?? [];
   if (labels.length > 0) {
-    const placeholders = labels.map(() => "?").join(", ");
     conditions.push(
       `(SELECT COUNT(DISTINCT value) FROM json_each(messages.labels_json)
-        WHERE value IN (${placeholders})) = ?`,
+        WHERE value IN (SELECT value FROM json_each(?))) = ?`,
     );
-    binds.push(...labels, labels.length);
+    binds.push(JSON.stringify(labels), labels.length);
   }
   if (filters.from !== undefined && filters.from !== "") {
     conditions.push(`LOWER(from_addr) LIKE ? ESCAPE '\\'`);
@@ -263,9 +258,9 @@ export async function listMessagesByIds(
   const result = await db
     .prepare(
       `SELECT ${COLUMNS} FROM messages
-       WHERE inbox_id = ? AND message_id IN (${placeholders(messageIds)})`,
+       WHERE inbox_id = ? AND message_id IN (SELECT value FROM json_each(?))`,
     )
-    .bind(inboxId, ...messageIds)
+    .bind(inboxId, JSON.stringify(messageIds))
     .all<MessageRow>();
   return result.results;
 }
@@ -351,37 +346,44 @@ export async function deleteMessages(
   }
   const messageIds = rows.map((row) => row.message_id);
   const threadIds = unique(rows.map((row) => row.thread_id));
-  const messageList = placeholders(messageIds);
-  const threadList = placeholders(threadIds);
+  const messageIdsJson = JSON.stringify(messageIds);
+  const threadIdsJson = JSON.stringify(threadIds);
 
   const attachments = await db
-    .prepare(`SELECT r2_key FROM attachments WHERE message_id IN (${messageList})`)
-    .bind(...messageIds)
+    .prepare(`SELECT r2_key FROM attachments WHERE message_id IN (SELECT value FROM json_each(?))`)
+    .bind(messageIdsJson)
     .all<{ r2_key: string }>();
   const survivors = await db
     .prepare(
       `SELECT DISTINCT thread_id FROM messages
-       WHERE thread_id IN (${threadList}) AND message_id NOT IN (${messageList})`,
+       WHERE thread_id IN (SELECT value FROM json_each(?))
+       AND message_id NOT IN (SELECT value FROM json_each(?))`,
     )
-    .bind(...threadIds, ...messageIds)
+    .bind(threadIdsJson, messageIdsJson)
     .all<{ thread_id: string }>();
 
   const surviving = survivors.results.map((row) => row.thread_id);
   const emptied = threadIds.filter((threadId) => !surviving.includes(threadId));
 
   const statements = [
-    db.prepare(`DELETE FROM attachments WHERE message_id IN (${messageList})`).bind(...messageIds),
     db
-      .prepare(`DELETE FROM messages WHERE inbox_id = ? AND message_id IN (${messageList})`)
-      .bind(inboxId, ...messageIds),
+      .prepare(`DELETE FROM attachments WHERE message_id IN (SELECT value FROM json_each(?))`)
+      .bind(messageIdsJson),
+    db
+      .prepare(
+        `DELETE FROM messages
+         WHERE inbox_id = ? AND message_id IN (SELECT value FROM json_each(?))`,
+      )
+      .bind(inboxId, messageIdsJson),
   ];
   if (emptied.length > 0) {
     statements.push(
       db
         .prepare(
-          `DELETE FROM threads WHERE inbox_id = ? AND thread_id IN (${placeholders(emptied)})`,
+          `DELETE FROM threads
+           WHERE inbox_id = ? AND thread_id IN (SELECT value FROM json_each(?))`,
         )
-        .bind(inboxId, ...emptied),
+        .bind(inboxId, JSON.stringify(emptied)),
     );
   }
   if (surviving.length > 0) {
@@ -390,9 +392,9 @@ export async function deleteMessages(
         .prepare(
           `UPDATE threads SET message_count =
              (SELECT COUNT(*) FROM messages WHERE messages.thread_id = threads.thread_id)
-           WHERE thread_id IN (${placeholders(surviving)})`,
+           WHERE thread_id IN (SELECT value FROM json_each(?))`,
         )
-        .bind(...surviving),
+        .bind(JSON.stringify(surviving)),
     );
   }
   await db.batch(statements);
