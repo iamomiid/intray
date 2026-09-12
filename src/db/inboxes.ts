@@ -1,4 +1,4 @@
-import type { DeletedObjectKeys, InboxRow, ListOptions } from "./rows";
+import type { DeletedInboxKeys, InboxRow, ListOptions } from "./rows";
 
 const COLUMNS = "inbox_id, account_id, username, domain, display_name, created_at";
 
@@ -91,7 +91,7 @@ export async function deleteInbox(
   db: D1Database,
   accountId: string,
   inboxId: string,
-): Promise<DeletedObjectKeys | null> {
+): Promise<DeletedInboxKeys | null> {
   const owned = await getInboxForAccount(db, accountId, inboxId);
   if (owned === null) {
     return null;
@@ -107,6 +107,14 @@ export async function deleteInbox(
     )
     .bind(inboxId)
     .all<{ r2_key: string }>();
+  const draftAttachments = await db
+    .prepare(
+      `SELECT json_extract(entry.value, '$.key') AS r2_key
+       FROM drafts, json_each(drafts.body_json, '$.attachments') AS entry
+       WHERE drafts.inbox_id = ? AND json_extract(entry.value, '$.key') IS NOT NULL`,
+    )
+    .bind(inboxId)
+    .all<{ r2_key: string }>();
   await db
     .prepare(
       `DELETE FROM attachments
@@ -114,6 +122,7 @@ export async function deleteInbox(
     )
     .bind(inboxId)
     .run();
+  await db.prepare(`DELETE FROM drafts WHERE inbox_id = ?`).bind(inboxId).run();
   await db.prepare(`DELETE FROM messages WHERE inbox_id = ?`).bind(inboxId).run();
   await db.prepare(`DELETE FROM threads WHERE inbox_id = ?`).bind(inboxId).run();
   await db
@@ -123,5 +132,6 @@ export async function deleteInbox(
   return {
     rawKeys: raws.results.map((row) => row.raw_key),
     attachmentKeys: attachments.results.map((row) => row.r2_key),
+    draftKeys: draftAttachments.results.map((row) => row.r2_key),
   };
 }

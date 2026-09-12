@@ -136,6 +136,6 @@ export async function deleteInbox(
   if (removed === null) {
     throw notFound("inbox not found");
   }
-  await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys]);
+  await deleteObjects(env, [...removed.rawKeys, ...removed.attachmentKeys, ...removed.draftKeys]);
   return { deleted: true };
 }

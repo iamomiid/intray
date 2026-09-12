@@ -1,5 +1,6 @@
 export * from "./accounts";
 export * from "./attachments";
+export * from "./drafts";
 export * from "./inboxes";
 export * from "./keys";
 export * from "./messages";

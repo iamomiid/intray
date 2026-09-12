@@ -30,11 +30,6 @@ Per-account endpoints receiving `message.received` and `message.sent`. HMAC-SHA2
 the body with a per-endpoint secret. Delivery and retry through Cloudflare Queues so a slow consumer
 never blocks the inbound handler.
 
-## 3. Drafts and scheduled send
-
-A `drafts` table plus `send_at` on outbound rows. A cron trigger drains due drafts through the same
-`src/email/outbound.ts` path the synchronous send uses.
-
 ## 4. Custom domains per account
 
 Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and

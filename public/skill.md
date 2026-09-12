@@ -144,6 +144,23 @@ That message is stored with labels `["sent","alerts"]`, and because the recipien
 address it came from, the reply arrives labelled `alerts` too. `from` must be your own inbox
 address, with or without a tag; anything else is rejected.
 
+Write a message now and send it later. Post the body to `/drafts` and it is checked exactly as a
+send is checked, so a draft that could never be sent is refused there and then. With `send_at`, a
+Unix-millisecond time in the future, a cron trigger sends it within a minute of that time; without
+one it waits until you post to `/drafts/drf_.../send`. Pass `parent_message_id` instead of `to` and
+`subject` to draft a reply in an existing thread.
+
+```sh
+curl -sS -X POST '<PUBLIC_URL>/v1/inboxes/signups%40agents.example.com/drafts' \
+  -H 'Authorization: Bearer it_...' -H 'content-type: application/json' \
+  -d '{"to":"you@example.com","subject":"Morning report","text":"All quiet.","send_at":1757345000000}'
+```
+
+MCP: `create_draft`, `list_drafts`, `get_draft`, `update_draft`, `delete_draft`, `send_draft`. A
+draft is `draft` or `scheduled` until it is sent, then `sent` with `sent_message_id`, or `failed`
+with the reason in `error`; a failed draft is kept and is retried only when you give it a new
+`send_at`. Reschedule or unschedule with `update_draft {"send_at": ...}` or `{"send_at": null}`.
+
 Archive a thread once you are done with it. The same call marks it read, because archiving is a
 label change applied to every message in the thread:
 

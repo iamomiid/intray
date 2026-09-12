@@ -18,11 +18,12 @@ What is built, and what a contributor needs to know before touching it. Design r
 | outbound | done | recipient normalization, send/reply/forward builders, limit checks, send-error mapping |
 | core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
-| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 22 with one |
+| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 28 with one |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
 | batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
 | message search | done | `searchMessages` runs against the `messages_fts` FTS5 table, ranked by `bm25` with the subject weighted above the body; the `from`/`to`/`subject` filters on `list_messages` stay `LIKE` scans and are fine at v1 volumes |
+| drafts | done | `src/core/drafts.ts`, `migrations/0004_drafts.sql`; create, list, get, update, delete, send now, and a one-minute cron trigger draining due scheduled drafts through `sendMessage` and `replyToMessage` |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time. Text is extracted from PDF and docx on ingest into `attachments.text`, read through `GET .../attachments/:attachment_id/text` or `get_attachment`; `text_status` rides on every attachment object |
 
 ## Limitations
@@ -45,6 +46,13 @@ What is built, and what a contributor needs to know before touching it. Design r
   a TEXT primary key that rowid can be renumbered.
 
 ## Gotchas
+
+- `SELF.scheduled()` fails in the vitest pool with `DataCloneError: Could not serialize object of
+  type "LoopbackServiceStub"`. A test that needs the cron path imports the default export from
+  `src/index.ts` and calls `worker.scheduled?.(controller, env)` with a plain object cast to
+  `ScheduledController`; the handler takes no `ExecutionContext`, so passing one is a type error.
+- A draft left in `sending` is never picked up again by the drain, by design. A test that seeds one
+  to assert the `conflict` paths must not expect a later drain to clear it.
 
 - `@cloudflare/vitest-pool-workers` bundles a workerd that supports compatibility dates only up to
   2026-08-22, while `wrangler.jsonc` declares a later one. `vitest.config.ts` overrides
