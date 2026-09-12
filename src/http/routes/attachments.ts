@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { getAttachment } from "../../core/attachments";
+import { getAttachment, getAttachmentText } from "../../core/attachments";
 import { requireAuth } from "../auth";
 import type { AppEnv } from "../types";
 
@@ -32,6 +32,22 @@ attachmentRoutes.get(
           download.attachment.filename ?? download.attachment.attachment_id,
         ),
       },
+    });
+  },
+);
+
+attachmentRoutes.get(
+  "/inboxes/:inbox_id/messages/:message_id/attachments/:attachment_id/text",
+  async (c) => {
+    const text = await getAttachmentText(
+      c.env,
+      c.get("principal"),
+      c.req.param("inbox_id"),
+      c.req.param("message_id"),
+      c.req.param("attachment_id"),
+    );
+    return new Response(text, {
+      headers: { "content-type": "text/plain; charset=utf-8" },
     });
   },
 );

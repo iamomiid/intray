@@ -72,13 +72,16 @@ async function attachmentDetail(
     args.message_id,
     args.attachment_id,
   );
-  const { attachment } = download;
+  const { text: extracted, ...attachment } = download.attachment;
   const readable =
-    (attachment.content_type ?? "").startsWith("text/") && attachment.size <= TEXT_BODY_MAX_BYTES;
-  const text = readable ? await new Response(download.body).text() : null;
+    extracted === null &&
+    (attachment.content_type ?? "").startsWith("text/") &&
+    attachment.size <= TEXT_BODY_MAX_BYTES;
+  const decoded = readable ? await new Response(download.body).text() : null;
   if (!readable) {
     await download.body.cancel();
   }
+  const text = extracted ?? decoded;
   const base = `${config(env).publicUrl}/v1/inboxes/${encodeURIComponent(args.inbox_id)}`;
   return {
     ...attachment,
@@ -372,7 +375,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Get attachment",
       description:
-        "Return an attachment's metadata and a download_url, plus its decoded text when the content type is text/* and it is at most 64 KiB.",
+        "Return an attachment's metadata, a download_url, plus its text: the text extracted from a PDF or docx on ingest, otherwise the decoded body when the content type is text/* and it is at most 64 KiB. text_status says why text is absent.",
       inputSchema: z.object({
         inbox_id: inboxId,
         message_id: messageId,

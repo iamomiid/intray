@@ -23,7 +23,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
 | batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
 | message search | done | `searchMessages` runs against the `messages_fts` FTS5 table, ranked by `bm25` with the subject weighted above the body; the `from`/`to`/`subject` filters on `list_messages` stay `LIKE` scans and are fine at v1 volumes |
-| attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time |
+| attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time. Text is extracted from PDF and docx on ingest into `attachments.text`, read through `GET .../attachments/:attachment_id/text` or `get_attachment`; `text_status` rides on every attachment object |
 
 ## Limitations
 
@@ -85,6 +85,14 @@ What is built, and what a contributor needs to know before touching it. Design r
   `variable_declaration()` nodes and filters on their text with a regex. Re-check the pattern if
   Biome is upgraded. `lint/` is excluded from `files.includes` so the formatter leaves the plugin
   source alone.
+- `unpdf` bundles pdf.js and is most of the Worker's size: the bundle is 3912 KiB, 850 KiB gzipped,
+  up from 1496 KiB and 274 KiB before attachment text extraction. That is well inside the Workers
+  Paid limit but it is the first dependency large enough to matter, so weigh anything comparable
+  against what it buys.
+- Extraction runs inline in `ingestInbound`, after the rows are written, once per supported
+  attachment. A PDF costs pdf.js a parse of the whole file plus a copy of its bytes, so a mail
+  carrying several large PDFs adds CPU and memory to an ingest that Email Routing is waiting on.
+  The 10 MiB input cap is what bounds it; move extraction off the ingest path before raising that.
 - Subdomain mode leaves the zone apex without Cloudflare MX records, so the Cloudflare dashboard
   reports the zone's Email Routing status as `misconfigured`. That is cosmetic and expected;
   delivery to the subdomain works, the setup does not read that field, and it must not start

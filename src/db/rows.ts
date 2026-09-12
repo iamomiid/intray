@@ -81,6 +81,8 @@ export interface AttachmentRow {
   r2_key: string;
   inline: number;
   content_id: string | null;
+  text: string | null;
+  text_status: string;
 }
 
 export interface DeletedObjectKeys {

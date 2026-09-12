@@ -176,6 +176,8 @@ are filtering on.
 - An unverified account may email only its own signup address. Anything else is `message_rejected`.
 - A message must stay under 5 MiB in total, with at most 50 recipients across `to`, `cc`, and `bcc`
   and at most 32 attachments. Attachment `content` is base64.
+- Text is extracted from received PDF and docx attachments on ingest, so `get_attachment` hands you
+  the document as `text` instead of bytes; `text_status` on the attachment says why there is none.
 - An account may hold a limited number of inboxes; creating one past the limit is `conflict`.
   Creating an address that already exists is `inbox_taken`.
 - `wait` blocks at most 55 seconds and defaults to 30. `since` defaults to the moment of the call.

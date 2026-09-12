@@ -96,11 +96,6 @@ same `550` and `552` reasons in the response body so the caller can bounce.
 `cloudflare` and instead checks that the chosen provider's secrets are set. Drafts (item 3) drain
 through the transport. The test suites' `EMAIL` fake becomes a `MailTransport` fake.
 
-## 7. Attachment text extraction
-
-Extract text from PDF and docx attachments on ingest and expose it on `get_attachment` so an agent
-can read a document without downloading and parsing bytes itself.
-
 ## 8. Suppression list and bounce handling
 
 Parse the bounce traffic arriving on the `cf-bounce` MX and maintain a per-account suppression list.

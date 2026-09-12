@@ -55,6 +55,26 @@ Rejections are thrown as `InboundRejected` and turned into `message.setReject(re
 Threading has no subject-based fallback: a reply from a client that drops both `In-Reply-To` and
 `References` starts a new thread.
 
+### Attachment text
+
+Step 7 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
+`extractText(contentType, filename, bytes)` from `src/email/extract.ts` over the bytes already in
+memory and writes the result onto the row with `updateAttachmentText`. PDF goes through `unpdf`,
+pdf.js packaged for serverless runtimes; docx is unzipped with `fflate` and the text runs are pulled
+out of `word/document.xml` with paragraphs joined by newlines, so no docx library is bundled. An
+input over 10 MiB is skipped as `too_large` and the output is capped at 256 KiB of UTF-8, truncated
+on a character boundary; whitespace runs are collapsed and paragraph breaks are kept. Nothing thrown
+escapes: a file that cannot be parsed is recorded as `failed` and ingest still succeeds. Outbound
+attachments are not extracted and stay `none`.
+
+Extraction is the last step of ingest, after `touchThread`, so that a heavy document that exhausts
+the handler's CPU budget cannot leave a message row behind a thread that was never touched.
+
+pdf.js detaches the buffer it is handed, so `extractPdf` passes it a copy and the caller's bytes
+stay usable. `unpdf` is loaded with a dynamic `import` inside `extractPdf` rather than at module
+scope, so the roughly 2.4 MB pdf.js bundle is parsed only on the first PDF and stays off the
+Worker's cold-start path; `fflate` is small enough to stay a static import.
+
 ## Outbound
 
 `sendMessage`, `replyToMessage` and `forwardMessage` in `src/core/messages.ts` run the same five
@@ -125,7 +145,7 @@ numbered migration.
 | `inboxes` | `inbox_id` (the address) | `username` and `domain` denormalized, `display_name` |
 | `threads` | `thread_id` (`thr_`) | `subject`, `last_message_at`, `message_count`, `participants_json` |
 | `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key` |
-| `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id` |
+| `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |
 | `messages_fts` | `message_id` (UNINDEXED) | FTS5 index over `subject`, `text`, `from_addr`, `from_name`; `inbox_id` UNINDEXED |
 
 Everything hangs off `account_id` through its inbox, and every child row cascades on delete.

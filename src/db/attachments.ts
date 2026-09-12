@@ -1,7 +1,8 @@
+import type { ExtractedText } from "../email/extract";
 import type { AttachmentRow } from "./rows";
 
 const COLUMNS =
-  "attachment_id, message_id, filename, content_type, size, r2_key, inline, content_id";
+  "attachment_id, message_id, filename, content_type, size, r2_key, inline, content_id, text, text_status";
 
 export interface InsertAttachmentInput {
   attachmentId: string;
@@ -44,7 +45,20 @@ export async function insertAttachment(
     r2_key: input.r2Key,
     inline: input.inline,
     content_id: input.contentId,
+    text: null,
+    text_status: "none",
   };
+}
+
+export async function updateAttachmentText(
+  db: D1Database,
+  attachmentId: string,
+  extracted: ExtractedText,
+): Promise<void> {
+  await db
+    .prepare("UPDATE attachments SET text = ?, text_status = ? WHERE attachment_id = ?")
+    .bind(extracted.text, extracted.status, attachmentId)
+    .run();
 }
 
 export async function listAttachments(db: D1Database, messageId: string): Promise<AttachmentRow[]> {
