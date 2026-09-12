@@ -14,8 +14,6 @@ import { resetDatabase } from "./support";
 const ACCOUNT_ID = "acc_threads";
 const INBOX_ID = "agent@intray.example";
 
-let principal: Principal;
-
 function bytes(text: string): Uint8Array {
   return new TextEncoder().encode(text.replace(/\r?\n/g, "\r\n"));
 }
@@ -33,8 +31,7 @@ async function rejectsWith(promise: Promise<unknown>, status: number, code: stri
   });
 }
 
-beforeEach(async () => {
-  await resetDatabase(env.DB);
+async function seedInbox(): Promise<Principal> {
   const account = await insertAccount(env.DB, {
     id: ACCOUNT_ID,
     email: "owner@example.com",
@@ -48,10 +45,15 @@ beforeEach(async () => {
     displayName: "Agent",
     createdAt: 1,
   });
-  principal = { account, keyId: "key_threads", pending: false };
+  return { account, keyId: "key_threads", pending: false };
+}
+
+beforeEach(async () => {
+  await resetDatabase(env.DB);
 });
 
 it("lists the threads of an owned inbox", async () => {
+  const principal = await seedInbox();
   const first = await deliver(plainEml);
   const second = await deliver(htmlAttachmentEml, "carol@example.com");
 
@@ -68,6 +70,7 @@ it("lists the threads of an owned inbox", async () => {
 });
 
 it("pages threads with a cursor", async () => {
+  const principal = await seedInbox();
   const first = await deliver(plainEml);
   const second = await deliver(htmlAttachmentEml, "carol@example.com");
 
@@ -87,6 +90,7 @@ it("pages threads with a cursor", async () => {
 });
 
 it("returns a thread with its messages ascending", async () => {
+  const principal = await seedInbox();
   const first = await deliver(plainEml);
   const second = await deliver(replyEml);
   expect(second.threadId).toBe(first.threadId);
@@ -107,6 +111,7 @@ it("returns a thread with its messages ascending", async () => {
 });
 
 it("attaches attachments to the messages of a thread", async () => {
+  const principal = await seedInbox();
   const delivered = await deliver(htmlAttachmentEml, "carol@example.com");
   const thread = await getThread(env, principal, INBOX_ID, delivered.threadId);
 
@@ -121,6 +126,7 @@ it("attaches attachments to the messages of a thread", async () => {
 });
 
 it("hides threads of an inbox the principal does not own", async () => {
+  await seedInbox();
   const delivered = await deliver(plainEml);
   const stranger: Principal = {
     account: { id: "acc_other", email: "other@example.com", verified_at: null, created_at: 1 },
@@ -133,6 +139,7 @@ it("hides threads of an inbox the principal does not own", async () => {
 });
 
 it("rejects an unknown thread", async () => {
+  const principal = await seedInbox();
   await rejectsWith(getThread(env, principal, INBOX_ID, "thr_missing"), 404, "not_found");
   await rejectsWith(
     updateThreadLabels(env, principal, INBOX_ID, "thr_missing", { add: ["archived"] }),
@@ -143,6 +150,7 @@ it("rejects an unknown thread", async () => {
 });
 
 it("applies a label change to every message in a thread", async () => {
+  const principal = await seedInbox();
   const first = await deliver(plainEml);
   const second = await deliver(replyEml);
   expect(second.threadId).toBe(first.threadId);
@@ -166,6 +174,7 @@ it("applies a label change to every message in a thread", async () => {
 });
 
 it("rejects a thread label change that names nothing to add or remove", async () => {
+  const principal = await seedInbox();
   const delivered = await deliver(plainEml);
 
   await rejectsWith(
@@ -181,6 +190,7 @@ it("rejects a thread label change that names nothing to add or remove", async ()
 });
 
 it("deletes a thread with its messages and their r2 objects", async () => {
+  const principal = await seedInbox();
   const first = await deliver(htmlAttachmentEml, "carol@example.com");
   const second = await deliver(plainEml);
   expect(second.threadId).not.toBe(first.threadId);
@@ -199,6 +209,7 @@ it("deletes a thread with its messages and their r2 objects", async () => {
 });
 
 it("hides thread writes from an inbox the principal does not own", async () => {
+  const principal = await seedInbox();
   const delivered = await deliver(plainEml);
   const stranger: Principal = {
     account: { id: "acc_other", email: "other@example.com", verified_at: null, created_at: 1 },

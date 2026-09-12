@@ -2,13 +2,16 @@ import type { Context } from "hono";
 import { badRequest } from "../lib/errors";
 import type { AppEnv } from "./types";
 
-function parseObject<T>(raw: string): T {
-  let parsed: unknown;
+function parseJson(raw: string): unknown {
   try {
-    parsed = JSON.parse(raw);
+    return JSON.parse(raw);
   } catch {
     throw badRequest("invalid json");
   }
+}
+
+function parseObject<T>(raw: string): T {
+  const parsed = parseJson(raw);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw badRequest("invalid json");
   }

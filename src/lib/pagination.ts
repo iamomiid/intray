@@ -23,13 +23,16 @@ export function encodeCursor(cursor: Cursor): string {
   return base64UrlEncode(new TextEncoder().encode(json));
 }
 
-export function decodeCursor(token: string): Cursor {
-  let parsed: unknown;
+function decodeToken(token: string): unknown {
   try {
-    parsed = JSON.parse(new TextDecoder().decode(base64UrlDecode(token)));
+    return JSON.parse(new TextDecoder().decode(base64UrlDecode(token)));
   } catch {
     throw badRequest("invalid page token");
   }
+}
+
+export function decodeCursor(token: string): Cursor {
+  const parsed = decodeToken(token);
   if (typeof parsed !== "object" || parsed === null) {
     throw badRequest("invalid page token");
   }
@@ -49,12 +52,7 @@ export function encodeOffset(offset: number): string {
 }
 
 export function decodeOffset(token: string): number {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(base64UrlDecode(token)));
-  } catch {
-    throw badRequest("invalid page token");
-  }
+  const parsed = decodeToken(token);
   if (typeof parsed !== "object" || parsed === null) {
     throw badRequest("invalid page token");
   }

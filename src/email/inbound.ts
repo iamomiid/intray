@@ -166,25 +166,30 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   return { messageId, threadId, inboxId: inbox.inbox_id };
 }
 
+async function fillBuffer(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  buffer: Uint8Array,
+  offset: number,
+): Promise<number> {
+  const { done, value } = await reader.read();
+  if (done) {
+    return offset;
+  }
+  if (value === undefined || offset >= buffer.length) {
+    return fillBuffer(reader, buffer, offset);
+  }
+  const room = buffer.length - offset;
+  const chunk = value.length > room ? value.subarray(0, room) : value;
+  buffer.set(chunk, offset);
+  return fillBuffer(reader, buffer, offset + chunk.length);
+}
+
 async function readRaw(stream: ReadableStream<Uint8Array>, rawSize: number): Promise<Uint8Array> {
   const buffer = new Uint8Array(rawSize);
   const reader = stream.getReader();
-  let offset = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    if (value === undefined || offset >= buffer.length) {
-      continue;
-    }
-    const room = buffer.length - offset;
-    const chunk = value.length > room ? value.subarray(0, room) : value;
-    buffer.set(chunk, offset);
-    offset += chunk.length;
-  }
+  const filled = await fillBuffer(reader, buffer, 0);
   reader.releaseLock();
-  return offset === buffer.length ? buffer : buffer.subarray(0, offset);
+  return filled === buffer.length ? buffer : buffer.subarray(0, filled);
 }
 
 export async function handleEmail(

@@ -221,21 +221,33 @@ async function runEmailRouting(context: SetupContext, step: string): Promise<Out
   return done(changed.join(", "));
 }
 
+interface OnboardedSubdomain {
+  entry: SendingSubdomain | undefined;
+  created: boolean;
+}
+
+async function onboardSendingSubdomain(
+  cf: CfRequest,
+  zone: string,
+  domain: string,
+): Promise<OnboardedSubdomain> {
+  const list = await getEnvelope<SendingSubdomain[]>(cf, `/zones/${zone}/email/sending/subdomains`);
+  const existing = (list ?? []).find((item) => item.name?.toLowerCase() === domain);
+  if (existing !== undefined) {
+    return { entry: existing, created: false };
+  }
+  const response = await cf<SendingSubdomain>("POST", `/zones/${zone}/email/sending/subdomains`, {
+    name: domain,
+  });
+  return { entry: response.result ?? undefined, created: true };
+}
+
 async function runEmailSending(context: SetupContext, step: string): Promise<Outcome> {
   const cf = requireApi(context, step).step(step, "Email Sending");
   const zone = context.zoneId;
   const domain = context.args.domain;
 
-  const list = await getEnvelope<SendingSubdomain[]>(cf, `/zones/${zone}/email/sending/subdomains`);
-  let entry = (list ?? []).find((item) => item.name?.toLowerCase() === domain);
-  let created = false;
-  if (entry === undefined) {
-    const response = await cf<SendingSubdomain>("POST", `/zones/${zone}/email/sending/subdomains`, {
-      name: domain,
-    });
-    entry = response.result ?? undefined;
-    created = true;
-  }
+  const { entry, created } = await onboardSendingSubdomain(cf, zone, domain);
 
   const tag = entry?.tag ?? entry?.id;
   if (typeof tag !== "string" || tag === "") {

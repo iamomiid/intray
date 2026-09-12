@@ -1,0 +1,9 @@
+language js
+
+variable_declaration() as $declaration where {
+  $declaration <: r"^let\b[\s\S]*",
+  register_diagnostic(
+    span = $declaration,
+    message = "let is not used in this repo. Declare with const and restructure so the binding is never reassigned."
+  )
+}

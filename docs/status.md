@@ -7,7 +7,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 
 | Subsystem | Status | Notes |
 | --- | --- | --- |
-| scaffold | done | pnpm, `wrangler.jsonc`, tsconfig, biome, vitest-in-workerd |
+| scaffold | done | pnpm, `wrangler.jsonc`, tsconfig, biome with the `lint/no-let.grit` plugin, vitest-in-workerd |
 | ci | done | `.github/workflows/ci.yml` on pull requests and `main`: lint, typecheck, tests, forbidden-identifier check, gitleaks |
 | db | done | one module per table plus `rows.ts` and `index.ts`; keyset pagination |
 | lib | done | `address`, `hash`, `otp`, `pagination`, `limits`, `time`, `rfc`, `errors`, `ids` |
@@ -81,6 +81,10 @@ What is built, and what a contributor needs to know before touching it. Design r
 - `JSON.stringify` does not match biome's formatting of `wrangler.jsonc`, so every config write the
   setup makes is followed by `pnpm exec biome format --write`. Re-check if biome's formatting
   changes.
+- Biome GritQL snippet patterns do not match `let` declarations, so `lint/no-let.grit` matches
+  `variable_declaration()` nodes and filters on their text with a regex. Re-check the pattern if
+  Biome is upgraded. `lint/` is excluded from `files.includes` so the formatter leaves the plugin
+  source alone.
 - Subdomain mode leaves the zone apex without Cloudflare MX records, so the Cloudflare dashboard
   reports the zone's Email Routing status as `misconfigured`. That is cosmetic and expected;
   delivery to the subdomain works, the setup does not read that field, and it must not start

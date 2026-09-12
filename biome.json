@@ -7,8 +7,9 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!node_modules", "!.wrangler", "!dist", "!.claude"]
+    "includes": ["**", "!node_modules", "!.wrangler", "!dist", "!.claude", "!lint"]
   },
+  "plugins": ["./lint/no-let.grit"],
   "formatter": {
     "enabled": true,
     "indentStyle": "space",

@@ -19,7 +19,7 @@ import type { MessageRow } from "../src/db/rows";
 import { deleteThread, getThread, insertThread, touchThread } from "../src/db/threads";
 import { ftsMatch } from "../src/lib/fts";
 import { decodeCursor, decodeOffset, page, pageFromOffset } from "../src/lib/pagination";
-import { resetDatabase } from "./support";
+import { indexes, resetDatabase } from "./support";
 
 const ACCOUNT_ID = "acc_test";
 const INBOX_ID = "agent@intray.example";
@@ -66,6 +66,19 @@ function seedInput(seed: MessageSeed): InsertMessageInput {
 
 function search(q: string): Promise<MessageRow[]> {
   return searchMessages(env.DB, INBOX_ID, ftsMatch(q), { limit: 25, offset: 0 });
+}
+
+interface ReadPage {
+  ids: string[];
+  next: string | null;
+}
+
+async function readAllPages(
+  read: (token: string | null) => Promise<ReadPage>,
+  token: string | null = null,
+): Promise<string[][]> {
+  const { ids, next } = await read(token);
+  return next === null ? [ids] : [ids, ...(await readAllPages(read, next))];
 }
 
 beforeEach(async () => {
@@ -139,7 +152,7 @@ it("filters by sender substring case-insensitively and by time bounds", async ()
 });
 
 it("pages messages with a keyset cursor", async () => {
-  for (let index = 0; index < 5; index += 1) {
+  for (const index of indexes(5)) {
     await insertMessage(
       env.DB,
       seedInput({
@@ -151,11 +164,7 @@ it("pages messages with a keyset cursor", async () => {
   }
 
   const toCursor = (row: MessageRow) => ({ at: row.created_at, id: row.message_id });
-  const seen: string[] = [];
-  let token: string | null = null;
-  let pages = 0;
-
-  do {
+  const pages = await readAllPages(async (token) => {
     const rows: MessageRow[] = await listMessages(
       env.DB,
       INBOX_ID,
@@ -163,13 +172,11 @@ it("pages messages with a keyset cursor", async () => {
       { limit: 2, cursor: token === null ? null : decodeCursor(token) },
     );
     const result = page(rows, 2, toCursor);
-    seen.push(...result.items.map((row) => row.message_id));
-    token = result.next_page_token;
-    pages += 1;
-  } while (token !== null);
+    return { ids: result.items.map((row) => row.message_id), next: result.next_page_token };
+  });
 
-  expect(pages).toBe(3);
-  expect(seen).toEqual(["msg_4", "msg_3", "msg_2", "msg_1", "msg_0"]);
+  expect(pages).toHaveLength(3);
+  expect(pages.flat()).toEqual(["msg_4", "msg_3", "msg_2", "msg_1", "msg_0"]);
 });
 
 it("searches subject, text, and sender", async () => {
@@ -311,7 +318,7 @@ it("clears the fts index when a thread is deleted", async () => {
 });
 
 it("pages search results by offset without repeating a row", async () => {
-  for (let index = 0; index < 5; index += 1) {
+  for (const index of indexes(5)) {
     await insertMessage(
       env.DB,
       seedInput({
@@ -324,19 +331,15 @@ it("pages search results by offset without repeating a row", async () => {
     );
   }
 
-  const seen: string[] = [];
-  let token: string | null = null;
-  let pages = 0;
-  do {
+  const pages = await readAllPages(async (token) => {
     const offset: number = token === null ? 0 : decodeOffset(token);
     const rows = await searchMessages(env.DB, INBOX_ID, ftsMatch("invoice"), { limit: 2, offset });
     const result = pageFromOffset(rows, 2, offset);
-    seen.push(...result.items.map((row) => row.message_id));
-    token = result.next_page_token;
-    pages += 1;
-  } while (token !== null);
+    return { ids: result.items.map((row) => row.message_id), next: result.next_page_token };
+  });
+  const seen = pages.flat();
 
-  expect(pages).toBe(3);
+  expect(pages).toHaveLength(3);
   expect(seen).toEqual(["msg_4", "msg_3", "msg_2", "msg_1", "msg_0"]);
   expect(new Set(seen).size).toBe(5);
 });

@@ -15,6 +15,9 @@ accounts/inboxes/threads/messages, R2 for raw MIME and attachments. Hono for HTT
 - Package manager is pnpm. Node 22 or newer. Never use npm or yarn in this repo.
 - **No comments in code.** No `//`, no `/* */`, no JSDoc, none in SQL or JSON. Name things so the
   comment is unnecessary.
+- **No `let` anywhere**, enforced by `lint/no-let.grit` through Biome's plugin support. Bind with
+  `const` and restructure: a helper that returns the value, a ternary, `map`/`reduce`, or a
+  recursive helper that takes the state as parameters.
 - HTTP routes and MCP tools are thin adapters over `src/core`. No business logic in either adapter.
 - Strict TypeScript. Explicit types at module boundaries. No `any`.
 - Documentation describes the current state and is updated in place. No session logs, no dated
@@ -44,6 +47,7 @@ accounts/inboxes/threads/messages, R2 for raw MIME and attachments. Hono for HTT
 .github/                CI workflow and the identifier check it runs
 wrangler.jsonc          bindings, vars, compatibility date
 migrations/             D1 migrations, applied with pnpm db:migrate:local
+lint/no-let.grit        Biome GritQL plugin that rejects a let declaration
 scripts/setup.ts        the setup command; steps and helpers in scripts/lib
 src/index.ts            fetch (/mcp then Hono) and email exports
 src/env.ts              Env bindings interface and config(env)

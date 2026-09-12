@@ -17,15 +17,21 @@ export const TOKEN_PERMISSIONS = [
 
 export const EMAIL_SCOPES = ["email_routing:write", "email_sending:write"];
 
+function readFileOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 export function readApiToken(root: string): string {
   const fromEnvironment = proc.env.CLOUDFLARE_API_TOKEN;
   if (fromEnvironment !== undefined && fromEnvironment.trim() !== "") {
     return fromEnvironment.trim();
   }
-  let file = "";
-  try {
-    file = readFileSync(join(root, ".env"), "utf8");
-  } catch {
+  const file = readFileOrNull(join(root, ".env"));
+  if (file === null) {
     return "";
   }
   return parseEnvFile(file).CLOUDFLARE_API_TOKEN?.trim() ?? "";
@@ -51,10 +57,8 @@ export function wranglerConfigPaths(): string[] {
 
 export function readWranglerLogin(): WranglerLogin | null {
   for (const path of wranglerConfigPaths()) {
-    let file = "";
-    try {
-      file = readFileSync(path, "utf8");
-    } catch {
+    const file = readFileOrNull(path);
+    if (file === null) {
       continue;
     }
     const login = parseWranglerConfig(file);
