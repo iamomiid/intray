@@ -18,9 +18,10 @@ What is built, and what a contributor needs to know before touching it. Design r
 | outbound | done | recipient normalization, send/reply/forward builders, limit checks, send-error mapping |
 | core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
-| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 18 with one |
+| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 22 with one |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
+| batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
 | message search | done | `searchMessages` runs against the `messages_fts` FTS5 table, ranked by `bm25` with the subject weighted above the body; the `from`/`to`/`subject` filters on `list_messages` stay `LIKE` scans and are fine at v1 volumes |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time |
 

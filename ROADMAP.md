@@ -35,11 +35,6 @@ never blocks the inbound handler.
 A `drafts` table plus `send_at` on outbound rows. A cron trigger drains due drafts through the same
 `src/email/outbound.ts` path the synchronous send uses.
 
-## 5. Thread update/delete, message batch operations
-
-Bulk label and delete over a list of message ids, and thread-level archive/delete that cascades to
-its messages. Batched D1 statements, one transaction per request.
-
 ## 7. Custom domains per account
 
 Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and

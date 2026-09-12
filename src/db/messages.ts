@@ -49,6 +49,25 @@ export interface MessageFilters {
   before?: number;
 }
 
+export interface MessageLabelUpdate {
+  messageId: string;
+  labelsJson: string;
+}
+
+function placeholders(values: string[]): string {
+  return values.map(() => "?").join(", ");
+}
+
+function unique(values: string[]): string[] {
+  const seen: string[] = [];
+  for (const value of values) {
+    if (!seen.includes(value)) {
+      seen.push(value);
+    }
+  }
+  return seen;
+}
+
 function likePattern(value: string): string {
   const escaped = value.toLowerCase().replace(/[\\%_]/g, (character) => `\\${character}`);
   return `%${escaped}%`;
@@ -233,6 +252,24 @@ export async function listMessagesSince(
   return result.results;
 }
 
+export async function listMessagesByIds(
+  db: D1Database,
+  inboxId: string,
+  messageIds: string[],
+): Promise<MessageRow[]> {
+  if (messageIds.length === 0) {
+    return [];
+  }
+  const result = await db
+    .prepare(
+      `SELECT ${COLUMNS} FROM messages
+       WHERE inbox_id = ? AND message_id IN (${placeholders(messageIds)})`,
+    )
+    .bind(inboxId, ...messageIds)
+    .all<MessageRow>();
+  return result.results;
+}
+
 export async function listMessagesByThread(
   db: D1Database,
   threadId: string,
@@ -244,6 +281,23 @@ export async function listMessagesByThread(
     .bind(threadId)
     .all<MessageRow>();
   return result.results;
+}
+
+export async function updateMessagesLabels(
+  db: D1Database,
+  inboxId: string,
+  updates: MessageLabelUpdate[],
+): Promise<void> {
+  if (updates.length === 0) {
+    return;
+  }
+  await db.batch(
+    updates.map((update) =>
+      db
+        .prepare(`UPDATE messages SET labels_json = ? WHERE message_id = ? AND inbox_id = ?`)
+        .bind(update.labelsJson, update.messageId, inboxId),
+    ),
+  );
 }
 
 export async function updateMessageLabels(
@@ -275,13 +329,80 @@ export async function deleteMessage(
     .prepare(`SELECT r2_key FROM attachments WHERE message_id = ?`)
     .bind(messageId)
     .all<{ r2_key: string }>();
-  await db.prepare(`DELETE FROM attachments WHERE message_id = ?`).bind(messageId).run();
-  await db
-    .prepare(`DELETE FROM messages WHERE message_id = ? AND inbox_id = ?`)
-    .bind(messageId, inboxId)
-    .run();
+  await db.batch([
+    db.prepare(`DELETE FROM attachments WHERE message_id = ?`).bind(messageId),
+    db
+      .prepare(`DELETE FROM messages WHERE message_id = ? AND inbox_id = ?`)
+      .bind(messageId, inboxId),
+  ]);
   return {
     rawKeys: existing.raw_key === null ? [] : [existing.raw_key],
     attachmentKeys: attachments.results.map((row) => row.r2_key),
   };
+}
+
+export async function deleteMessages(
+  db: D1Database,
+  inboxId: string,
+  rows: MessageRow[],
+): Promise<DeletedObjectKeys> {
+  if (rows.length === 0) {
+    return { rawKeys: [], attachmentKeys: [] };
+  }
+  const messageIds = rows.map((row) => row.message_id);
+  const threadIds = unique(rows.map((row) => row.thread_id));
+  const messageList = placeholders(messageIds);
+  const threadList = placeholders(threadIds);
+
+  const attachments = await db
+    .prepare(`SELECT r2_key FROM attachments WHERE message_id IN (${messageList})`)
+    .bind(...messageIds)
+    .all<{ r2_key: string }>();
+  const survivors = await db
+    .prepare(
+      `SELECT DISTINCT thread_id FROM messages
+       WHERE thread_id IN (${threadList}) AND message_id NOT IN (${messageList})`,
+    )
+    .bind(...threadIds, ...messageIds)
+    .all<{ thread_id: string }>();
+
+  const surviving = survivors.results.map((row) => row.thread_id);
+  const emptied = threadIds.filter((threadId) => !surviving.includes(threadId));
+
+  const statements = [
+    db.prepare(`DELETE FROM attachments WHERE message_id IN (${messageList})`).bind(...messageIds),
+    db
+      .prepare(`DELETE FROM messages WHERE inbox_id = ? AND message_id IN (${messageList})`)
+      .bind(inboxId, ...messageIds),
+  ];
+  if (emptied.length > 0) {
+    statements.push(
+      db
+        .prepare(
+          `DELETE FROM threads WHERE inbox_id = ? AND thread_id IN (${placeholders(emptied)})`,
+        )
+        .bind(inboxId, ...emptied),
+    );
+  }
+  if (surviving.length > 0) {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE threads SET message_count =
+             (SELECT COUNT(*) FROM messages WHERE messages.thread_id = threads.thread_id)
+           WHERE thread_id IN (${placeholders(surviving)})`,
+        )
+        .bind(...surviving),
+    );
+  }
+  await db.batch(statements);
+
+  const rawKeys: string[] = [];
+  for (const row of rows) {
+    if (row.raw_key !== null) {
+      rawKeys.push(row.raw_key);
+    }
+  }
+
+  return { rawKeys, attachmentKeys: attachments.results.map((row) => row.r2_key) };
 }

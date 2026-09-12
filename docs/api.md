@@ -178,8 +178,20 @@ when the account is at `INBOX_LIMIT`, and with `inbox_taken` when the address ex
 | --- | --- | --- | --- |
 | GET | `/inboxes/:inbox_id/threads` | `limit`, `page_token` | `{items, next_page_token}` of thread |
 | GET | `/inboxes/:inbox_id/threads/:thread_id` | — | thread with `messages` |
+| PATCH | `/inboxes/:inbox_id/threads/:thread_id` | body `{add?, remove?}` | thread with `messages` |
+| DELETE | `/inboxes/:inbox_id/threads/:thread_id` | — | `{deleted: true}` |
 
 Threads are ordered by `last_message_at` descending.
+
+`PATCH` applies the label change to every message in the thread and returns the thread as `GET`
+does. At least one of `add` and `remove` must be a non-empty array. Archiving a thread is that
+change, not a separate endpoint:
+
+```json
+{ "add": ["archived"], "remove": ["unread"] }
+```
+
+`DELETE` removes the thread with every message under it and their stored objects.
 
 ### Messages
 
@@ -192,6 +204,8 @@ Threads are ordered by `last_message_at` descending.
 | GET | `/inboxes/:inbox_id/messages/:message_id/raw` | — | `message/rfc822` body |
 | PATCH | `/inboxes/:inbox_id/messages/:message_id` | body `{labels}` | message |
 | DELETE | `/inboxes/:inbox_id/messages/:message_id` | — | `{deleted: true}` |
+| POST | `/inboxes/:inbox_id/messages/labels` | body `{message_ids, add?, remove?}` | `{items}` of message |
+| POST | `/inboxes/:inbox_id/messages/delete` | body `{message_ids}` | `{deleted: <count>}` |
 
 `labels` is a comma-separated list and matches messages carrying all of them. `since` and `before`
 are Unix milliseconds and bound `created_at`. Messages are ordered by `created_at` descending,
@@ -210,7 +224,19 @@ a message, so a page taken while new mail arrives can shift.
 seconds elapse, whichever comes first. `timeout` defaults to 30 and caps at 55. It polls every 2
 seconds and returns an empty `items` array on timeout.
 
-Inbound messages are stored with labels `["received","unread"]`, outbound with `["sent"]`.
+Inbound messages are stored with labels `["received","unread"]`, outbound with `["sent"]`. A label
+is at most 64 characters and a message carries at most 20 of them, on `PATCH` and on the batch
+endpoints alike.
+
+The two batch endpoints take `message_ids`, a non-empty array of at most 100 ids after duplicates
+are dropped; more is 400 `bad_request`. Every id must belong to the inbox, and one that does not
+fails the whole request with 404 `not_found` naming the missing ids, changing nothing. Each request
+is a single transaction.
+
+`messages/labels` applies `add` then `remove` to every listed message and returns the updated
+messages in the order given; at least one of `add` and `remove` must be non-empty.
+`messages/delete` removes the messages with their stored objects, drops any thread left empty, and
+recounts the threads that survive.
 
 Subaddressing adds one more label automatically. Mail to `desk-agent+invoices@agents.example.com`
 lands in the `desk-agent@agents.example.com` inbox with labels `["received","unread","invoices"]`,
@@ -293,6 +319,8 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `delete_inbox` | `inbox_id` |
 | `list_threads` | `inbox_id`, `limit?`, `page_token?` |
 | `get_thread` | `inbox_id`, `thread_id` |
+| `update_thread_labels` | `inbox_id`, `thread_id`, `add?`, `remove?` |
+| `delete_thread` | `inbox_id`, `thread_id` |
 | `list_messages` | `inbox_id`, `labels?`, `from?`, `to?`, `subject?`, `since?`, `before?`, `limit?`, `page_token?` |
 | `search_messages` | `inbox_id`, `q`, `limit?`, `page_token?` |
 | `get_message` | `inbox_id`, `message_id` |
@@ -302,6 +330,8 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `forward_message` | `inbox_id`, `message_id`, `to`, `cc?`, `bcc?`, `from?`, `text?` |
 | `update_message_labels` | `inbox_id`, `message_id`, `labels` |
 | `delete_message` | `inbox_id`, `message_id` |
+| `batch_update_labels` | `inbox_id`, `message_ids`, `add?`, `remove?` |
+| `batch_delete_messages` | `inbox_id`, `message_ids` |
 | `get_attachment` | `inbox_id`, `message_id`, `attachment_id` |
 | `create_api_key` | `name?` |
 

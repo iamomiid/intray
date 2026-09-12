@@ -144,6 +144,20 @@ That message is stored with labels `["sent","alerts"]`, and because the recipien
 address it came from, the reply arrives labelled `alerts` too. `from` must be your own inbox
 address, with or without a tag; anything else is rejected.
 
+Archive a thread once you are done with it. The same call marks it read, because archiving is a
+label change applied to every message in the thread:
+
+```sh
+curl -sS -X PATCH '<PUBLIC_URL>/v1/inboxes/signups%40agents.example.com/threads/thr_...' \
+  -H 'Authorization: Bearer it_...' -H 'content-type: application/json' \
+  -d '{"add":["archived"],"remove":["unread"]}'
+```
+
+MCP: `update_thread_labels {"inbox_id":"...","thread_id":"thr_...","add":["archived"],"remove":["unread"]}`.
+To relabel or delete a handful of messages instead, post up to 100 ids to `/messages/labels` or
+`/messages/delete` (`batch_update_labels`, `batch_delete_messages`); one id the inbox does not hold
+fails the whole call and changes nothing.
+
 Search an inbox:
 
 ```sh

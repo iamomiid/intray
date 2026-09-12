@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, expect, it } from "vitest";
 import type { Principal } from "../src/core/principal";
-import { getThread, listThreads } from "../src/core/threads";
+import { deleteThread, getThread, listThreads, updateThreadLabels } from "../src/core/threads";
 import { insertAccount } from "../src/db/accounts";
 import { insertInbox } from "../src/db/inboxes";
 import { type InboundResult, ingestInbound } from "../src/email/inbound";
@@ -134,4 +134,83 @@ it("hides threads of an inbox the principal does not own", async () => {
 
 it("rejects an unknown thread", async () => {
   await rejectsWith(getThread(env, principal, INBOX_ID, "thr_missing"), 404, "not_found");
+  await rejectsWith(
+    updateThreadLabels(env, principal, INBOX_ID, "thr_missing", { add: ["archived"] }),
+    404,
+    "not_found",
+  );
+  await rejectsWith(deleteThread(env, principal, INBOX_ID, "thr_missing"), 404, "not_found");
+});
+
+it("applies a label change to every message in a thread", async () => {
+  const first = await deliver(plainEml);
+  const second = await deliver(replyEml);
+  expect(second.threadId).toBe(first.threadId);
+
+  const archived = await updateThreadLabels(env, principal, INBOX_ID, first.threadId, {
+    add: ["archived"],
+    remove: ["unread"],
+  });
+
+  expect(archived.thread_id).toBe(first.threadId);
+  expect(archived.messages).toHaveLength(2);
+  for (const message of archived.messages) {
+    expect(message.labels).toEqual(["received", "archived"]);
+  }
+
+  const reread = await getThread(env, principal, INBOX_ID, first.threadId);
+  expect(reread.messages.map((message) => message.labels)).toEqual([
+    ["received", "archived"],
+    ["received", "archived"],
+  ]);
+});
+
+it("rejects a thread label change that names nothing to add or remove", async () => {
+  const delivered = await deliver(plainEml);
+
+  await rejectsWith(
+    updateThreadLabels(env, principal, INBOX_ID, delivered.threadId, {}),
+    400,
+    "bad_request",
+  );
+  await rejectsWith(
+    updateThreadLabels(env, principal, INBOX_ID, delivered.threadId, { add: [""] }),
+    400,
+    "bad_request",
+  );
+});
+
+it("deletes a thread with its messages and their r2 objects", async () => {
+  const first = await deliver(htmlAttachmentEml, "carol@example.com");
+  const second = await deliver(plainEml);
+  expect(second.threadId).not.toBe(first.threadId);
+
+  const removed = await deleteThread(env, principal, INBOX_ID, first.threadId);
+  expect(removed).toEqual({ deleted: true });
+
+  expect(await env.BUCKET.head(`raw/${first.messageId}.eml`)).toBeNull();
+  expect(await env.BUCKET.head(`att/${first.messageId}/0`)).toBeNull();
+  expect(await env.BUCKET.head(`att/${first.messageId}/1`)).toBeNull();
+  await rejectsWith(getThread(env, principal, INBOX_ID, first.threadId), 404, "not_found");
+
+  const survivor = await getThread(env, principal, INBOX_ID, second.threadId);
+  expect(survivor.messages).toHaveLength(1);
+  expect(await env.BUCKET.head(`raw/${second.messageId}.eml`)).not.toBeNull();
+});
+
+it("hides thread writes from an inbox the principal does not own", async () => {
+  const delivered = await deliver(plainEml);
+  const stranger: Principal = {
+    account: { id: "acc_other", email: "other@example.com", verified_at: null, created_at: 1 },
+    keyId: "key_other",
+    pending: false,
+  };
+
+  await rejectsWith(
+    updateThreadLabels(env, stranger, INBOX_ID, delivered.threadId, { add: ["archived"] }),
+    404,
+    "not_found",
+  );
+  await rejectsWith(deleteThread(env, stranger, INBOX_ID, delivered.threadId), 404, "not_found");
+  expect((await getThread(env, principal, INBOX_ID, delivered.threadId)).messages).toHaveLength(1);
 });

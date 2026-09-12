@@ -6,6 +6,8 @@ import { sha256Hex } from "../src/lib/hash";
 import { OTP_TTL_MS } from "../src/lib/otp";
 import { now } from "../src/lib/time";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
+import plainEml from "./fixtures/plain.eml?raw";
+import replyEml from "./fixtures/reply.eml?raw";
 import { OPERATOR_TOKEN, resetDatabase } from "./support";
 
 interface JsonRpcResponse {
@@ -34,10 +36,13 @@ const ONBOARDING_TOOLS = ["read_onboarding_docs", "signup", "verify"];
 
 const AGENT_TOOLS = [
   "auth_me",
+  "batch_delete_messages",
+  "batch_update_labels",
   "create_api_key",
   "create_inbox",
   "delete_inbox",
   "delete_message",
+  "delete_thread",
   "forward_message",
   "get_attachment",
   "get_inbox",
@@ -50,6 +55,7 @@ const AGENT_TOOLS = [
   "search_messages",
   "send_message",
   "update_message_labels",
+  "update_thread_labels",
   "wait_for_message",
 ];
 
@@ -166,14 +172,14 @@ it("signs up over MCP and unlocks the authenticated tool set", async () => {
   expect(created.inbox_id.endsWith("@intray.example")).toBe(true);
   const names = await toolNames(created.api_key);
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(18);
+  expect(names).toHaveLength(22);
 });
 
 it("serves the full tool set to the operator token", async () => {
   const names = await toolNames(OPERATOR_TOKEN);
 
   expect(names).toEqual(AGENT_TOOLS);
-  expect(names).toHaveLength(18);
+  expect(names).toHaveLength(22);
 
   const seen = payload<{ account: { account_id: string; verified: boolean }; key_id: string }>(
     await callTool("auth_me", {}, OPERATOR_TOKEN),
@@ -381,4 +387,106 @@ it("reads an ingested message and its text attachment through the tools", async 
   );
   expect(binary.text).toBeUndefined();
   expect(binary.download_url).toContain("/attachments/");
+});
+
+it("archives a thread and batch relabels its messages through the tools", async () => {
+  const created = await onboard();
+  await callTool("create_inbox", { username: "agent" }, created.api_key);
+  const first = await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: INBOX_ID,
+    raw: bytes(plainEml),
+  });
+  const second = await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: INBOX_ID,
+    raw: bytes(replyEml),
+  });
+  expect(second.threadId).toBe(first.threadId);
+
+  const archived = payload<{ messages: { labels: string[] }[] }>(
+    await callTool(
+      "update_thread_labels",
+      { inbox_id: INBOX_ID, thread_id: first.threadId, add: ["archived"], remove: ["unread"] },
+      created.api_key,
+    ),
+  );
+  expect(archived.messages).toHaveLength(2);
+  for (const message of archived.messages) {
+    expect(message.labels).toEqual(["received", "archived"]);
+  }
+
+  const relabeled = payload<{ items: { message_id: string; labels: string[] }[] }>(
+    await callTool(
+      "batch_update_labels",
+      { inbox_id: INBOX_ID, message_ids: [second.messageId, first.messageId], add: ["flagged"] },
+      created.api_key,
+    ),
+  );
+  expect(relabeled.items.map((item) => item.message_id)).toEqual([
+    second.messageId,
+    first.messageId,
+  ]);
+  expect(relabeled.items[0]?.labels).toEqual(["received", "archived", "flagged"]);
+
+  const removed = payload<{ deleted: number }>(
+    await callTool(
+      "batch_delete_messages",
+      { inbox_id: INBOX_ID, message_ids: [first.messageId, second.messageId] },
+      created.api_key,
+    ),
+  );
+  expect(removed.deleted).toBe(2);
+
+  const gone = await callTool(
+    "get_thread",
+    { inbox_id: INBOX_ID, thread_id: first.threadId },
+    created.api_key,
+  );
+  expect(gone.isError).toBe(true);
+});
+
+it("deletes a thread through the tools and names a message id it cannot find", async () => {
+  const created = await onboard();
+  await callTool("create_inbox", { username: "agent" }, created.api_key);
+  const ingested = await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: INBOX_ID,
+    raw: bytes(plainEml),
+  });
+
+  const missing = await callTool(
+    "batch_update_labels",
+    { inbox_id: INBOX_ID, message_ids: [ingested.messageId, "msg_missing"], add: ["flagged"] },
+    created.api_key,
+  );
+  expect(missing.isError).toBe(true);
+  const failure = payload<{ error: { code: string; message: string } }>(missing);
+  expect(failure.error.code).toBe("not_found");
+  expect(failure.error.message).toContain("msg_missing");
+
+  const kept = payload<{ labels: string[] }>(
+    await callTool(
+      "get_message",
+      { inbox_id: INBOX_ID, message_id: ingested.messageId },
+      created.api_key,
+    ),
+  );
+  expect(kept.labels).toEqual(["received", "unread"]);
+
+  const removed = payload<{ deleted: boolean }>(
+    await callTool(
+      "delete_thread",
+      { inbox_id: INBOX_ID, thread_id: ingested.threadId },
+      created.api_key,
+    ),
+  );
+  expect(removed.deleted).toBe(true);
+
+  const gone = await callTool(
+    "get_thread",
+    { inbox_id: INBOX_ID, thread_id: ingested.threadId },
+    created.api_key,
+  );
+  expect(gone.isError).toBe(true);
 });
