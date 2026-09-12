@@ -56,11 +56,11 @@ and calls `ingestInbound(env, {envelopeFrom, envelopeTo, raw})`, which runs:
 5. `BUCKET.put("raw/{message_id}.eml")` and `BUCKET.put("att/{message_id}/{n}")` per attachment;
 6. `resolveThreadId` matching `[inReplyTo, ...references]` against `messages.rfc_message_id` in the
    same inbox, else a new `thr_` row whose subject and participants come from this message;
-7. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` plus the recipient's
-   tag when it can be a label, `size`, `has_attachments` and `raw_key`, then one `insertAttachment`
-   per stored object;
+7. `insertMessage` with `direction: "inbound"`, labels `["received","unread"]` plus `bounce` when
+   the message is a delivery status notification and the recipient's tag when it can be a label,
+   `size`, `has_attachments` and `raw_key`, then one `insertAttachment` per stored object;
 8. `touchThread`, which bumps `last_message_at`, rewrites `participants_json`, fills a missing
-   subject, and increments `message_count`.
+   subject, and increments `message_count`, then one suppression row per bounced address.
 
 Rejections are thrown as `InboundRejected` and turned into `message.setReject(reason)` by
 `handleEmail`. Anything else propagates, so Cloudflare retries or bounces.
@@ -108,6 +108,35 @@ between, and because that changes how the domain's mail flows it goes through th
 as the other irreversible steps. Switching back re-enables the catch-all and leaves the rules in
 place, which is why the switch is described as reversible.
 
+### Bounces
+
+`detectBounce` in `src/email/bounce.ts` runs over the parsed message between step 4 and step 7, and
+what it returns decides both the `bounce` label written in step 7 and the suppression rows written
+after step 8. It recognizes a report two ways. A `multipart/report` whose `Content-Type` carries
+`report-type=delivery-status` is read from its `message/delivery-status` parts; postal-mime hands
+those parts back as attachments with that MIME type and exposes the top-level headers, so the
+content type parameter is read off the raw header rather than reconstructed. A `text/plain` message
+from `mailer-daemon@` or `postmaster@` carrying `Auto-Submitted: auto-replied` and a `Status:` line
+is read from its text body with the same field parser, which covers the MTAs that inline the DSN
+fields instead of building the report structure. Both paths unfold continuation lines, split the
+body into blank-line-separated blocks, and take from each block with a `Final-Recipient` the
+address, the `Action`, the enhanced `Status` and the `Diagnostic-Code`. A `failed` action with a
+`5.x.x` status is a hard bounce, a `4.x.x` status or a `delayed` action is a soft one, and anything
+else is not a bounce, so a `delivered` or `relayed` notification suppresses nothing.
+
+`recordBounce` in `src/core/suppressions.ts` then writes one row per recipient: a hard bounce is an
+upsert with reason `hard_bounce`, source `dsn`, the diagnostic as `detail` and the stored bounce
+message's id as `message_id`, so the report can be read back; a soft bounce bumps `last_seen_at` on
+an existing row and otherwise inserts a bare `soft_bounce` row, which means a soft bounce never
+downgrades a hard one. `message.bounced` is emitted through `emitEvent` alongside
+`message.received`. Like the counters and the events, none of this can fail an ingest: detection is
+wrapped and `recordBounce` swallows and logs per recipient, because a report we cannot read must
+not bounce mail back at the sending MTA.
+
+The bounce is not a second kind of row. It is an ordinary inbound message with one more label, so
+an agent reads it with `list_messages {"labels":"bounce"}` and the raw report is in R2 like any
+other; only the suppression list is new state.
+
 ### Attachment text
 
 Step 8 is followed by `storeAttachmentText` in `src/core/attachments.ts`, which runs
@@ -130,7 +159,7 @@ Worker's cold-start path; `fflate` is small enough to stay a static import.
 
 ## Outbound
 
-`sendMessage`, `replyToMessage` and `forwardMessage` in `src/core/messages.ts` run the same six
+`sendMessage`, `replyToMessage` and `forwardMessage` in `src/core/messages.ts` run the same seven
 steps:
 
 1. `requireInbox`, which scopes the inbox to the calling principal's account;
@@ -141,9 +170,12 @@ steps:
    an `EmailMessageBuilder` and the derived fields the row needs;
 4. reject an unverified account sending anywhere but its own `accounts.email` with
    `403 message_rejected`;
-5. `send`, which maps the binding's `E_*` codes onto `AppError`s and normalizes the returned
+5. `assertRecipientsNotSuppressed`, which fails the whole send with 400 `recipient_suppressed`
+   when any recipient is on the account's suppression list under `hard_bounce`, `manual` or
+   `provider`;
+6. `send`, which maps the binding's `E_*` codes onto `AppError`s and normalizes the returned
    `messageId`;
-6. persist one `direction: "outbound"` row labelled `["sent"]` with `raw_key` null, store each
+7. persist one `direction: "outbound"` row labelled `["sent"]` with `raw_key` null, store each
    attachment at `att/{message_id}/{n}`, and call `touchThread`.
 
 All three take an optional `from`. `resolveSender` accepts it only when it normalizes to the
@@ -151,6 +183,17 @@ inbox's own address, so an inbox can send as itself or as a subaddress of itself
 anything else is `400 invalid_address`. A tag on it makes the From header, the stored `from_addr`
 and the `["sent", tag]` labels all carry it, which is what makes the recipient reply to the
 subaddressed address and the inbound path label the reply the same way.
+
+The suppression check is one indexed lookup keyed on `(account_id, address)` over the normalized
+recipients, and it fails the whole send rather than dropping the bad address, because a partial
+send an agent did not ask for is worse than an error it can read. A `soft_bounce` entry does not
+block: a full mailbox or a greylisting MTA is a reason to retry later, not a reason to stop. The
+operator principal is not exempt, unlike the quotas: suppression protects the domain's reputation
+rather than the deployment's budget, and a personal deployment burning its reputation is the case
+the check exists for. The Cloudflare send binding keeps a suppression list of its own and raises
+`E_RECIPIENT_SUPPRESSED` from it; that is a second, provider-side list we neither read nor write,
+and both map onto `recipient_suppressed` so a caller cannot tell which list stopped the send and
+does not need to.
 
 A reply stays in the parent's thread and carries `In-Reply-To` and `References` built from the
 parent's stored bare identifiers, bracketed on the wire. A send or a forward opens a new thread.
@@ -189,7 +232,8 @@ trade: at most one send, and a stuck row an operator can see, rather than a dupl
 
 ## Webhooks
 
-An account registers https endpoints that receive `message.received` and `message.sent`.
+An account registers https endpoints that receive `message.received`, `message.sent` and
+`message.bounced`.
 `src/core/webhooks.ts` holds the whole feature and splits into three parts.
 
 **Emit.** `emitEvent(env, accountId, event, inboxId, messageId)` loads the account's active
@@ -198,8 +242,9 @@ message_id}` job per webhook onto `env.WEBHOOKS`, in a single `sendBatch` when t
 one. The job carries ids and not the message itself: a queue message body is capped at 128 KB, and
 a mail with a large body or an inline image would exceed it and lose the event. `ingestInbound`
 calls it once the message row, its attachments and the thread are written, resolving the account
-through the inbox row; `persistOutbound` calls it for `message.sent`. It never throws: a queue that
-will not take the job is logged and the ingest or the send finishes normally, because a
+through the inbox row, and calls it again for `message.bounced` first when the message was a
+delivery status notification; `persistOutbound` calls it for `message.sent`. It never throws: a
+queue that will not take the job is logged and the ingest or the send finishes normally, because a
 subscriber's plumbing must not bounce mail or fail an agent's send.
 
 **Queue.** The producer binding and the consumer are the same `intray-webhooks` queue, with
@@ -374,7 +419,7 @@ unauthenticated tool set that `docs/api.md` promises.
 
 `handleMcp` reads the key from `Authorization: Bearer` or `X-API-Key` and runs `authenticate`
 before it builds a fresh `McpServer` for the request through `createMcpHandler`. Which tool set is
-registered depends on the result: three onboarding tools without a live key, forty-five with one.
+registered depends on the result: three onboarding tools without a live key, forty-eight with one.
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
@@ -423,6 +468,7 @@ numbered migration.
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id`, `text`, `text_status` |
 | `drafts` | `draft_id` (`drf_`) | `kind`, `parent_message_id`, `body_json` (attachment metadata only, bytes in R2), `send_at`, `status`, `sent_message_id`, `error`; indexed on `(inbox_id, updated_at)` and `(status, send_at)` |
 | `usage` | `(account_id, period)` | `period` is a `YYYY-MM` UTC month or the literal `all`; `messages_sent`, `messages_received`, `storage_bytes` |
+| `suppressions` | `(account_id, address)` | `reason` (`hard_bounce`, `soft_bounce`, `manual`, `provider`), `source` (`dsn`, `api`, `provider`), `detail`, `message_id` of the bounce report, `created_at`, `last_seen_at`; indexed on `(account_id, created_at)` |
 | `webhooks` | `webhook_id` (`whk_`) | `account_id`, `url`, `secret`, `events_json`, `description`, `active` |
 | `orgs` | `org_id` (`org_`) | `name`; one row per deployment for now |
 | `memberships` | `(org_id, account_id)` | `role` (`admin` or `member`), indexed on `account_id` |

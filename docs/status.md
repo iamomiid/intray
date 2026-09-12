@@ -16,19 +16,20 @@ What is built, and what a contributor needs to know before touching it. Design r
 | inboxes | done | create, get, list, delete with R2 cleanup, plus `requireInbox` |
 | inbound | done | `src/email/{inbound,threading,parse}.ts`; `email()` stores to D1 and R2 |
 | routing | done | `src/core/routing.ts`, `src/lib/cloudflare.ts`, `migrations/0008_routing.sql`; `ROUTING_MODE` is `catch_all` by default, `per_inbox` gives every inbox its own Email Routing rule created before the row and removed before the row, the setup's Routing steps write the vars, the `ROUTING_API_TOKEN` secret and reconcile the zone's rules against the deployment's inboxes |
-| outbound | done | recipient normalization, send/reply/forward builders, limit checks, send-error mapping |
-| core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments`, `orgs`, `audit`, `oauth` |
+| outbound | done | recipient normalization, send/reply/forward builders, limit checks, the pre-send suppression check, send-error mapping |
+| core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments`, `suppressions`, `orgs`, `audit`, `oauth` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
 | schemas | done | `src/schemas/`, one module per resource plus `objects.ts`; the MCP tools' `inputSchema` and the OpenAPI document both read from it, and `test/schemas.test.ts` parses a serialized row of each kind against its schema |
 | openapi | done | `GET /openapi.json`, built in `src/http/openapi.ts` from a route table and `z.toJSONSchema`, served by `src/http/routes/openapi.ts`; `test/openapi.test.ts` compares the document against `app.routes` in both directions |
-| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 45 with one, and 401 with a `WWW-Authenticate` resource pointer for a key that resolves to nothing |
+| mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 48 with one, and 401 with a `WWW-Authenticate` resource pointer for a key that resolves to nothing |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
 | batch operations | done | message label and delete batches, thread label update and delete; one `db.batch` per request, R2 cleanup and thread recount in `src/core/{messages,threads}.ts` |
 | message search | done | `searchMessages` runs against the `messages_fts` FTS5 table, ranked by `bm25` with the subject weighted above the body; the `from`/`to`/`subject` filters on `list_messages` stay `LIKE` scans and are fine at v1 volumes |
 | drafts | done | `src/core/drafts.ts`, `migrations/0004_drafts.sql`; create, list, get, update, delete, send now, and a one-minute cron trigger draining due scheduled drafts through `sendMessage` and `replyToMessage` |
 | orgs | done | `src/core/orgs.ts`, `src/core/audit.ts`, `migrations/0006_company.sql`; `ADMIN_SECRET` bootstraps one org, invites are accepted through signup, admins provision inboxes to members, API keys take `inbox:` scopes enforced in core, and an append-only audit log covers the admin actions |
-| webhooks | done | `src/core/webhooks.ts`; per-account https endpoints for `message.received` and `message.sent`, HMAC-SHA256 signed, delivered and retried through the `intray-webhooks` queue |
+| suppressions | done | `src/core/suppressions.ts`, `src/email/bounce.ts`, `migrations/0010_suppressions.sql`; delivery status notifications arriving on an inbox are labelled `bounce` and write a per-account suppression row, `GET/POST /v1/suppressions` and `DELETE /v1/suppressions/:address` read and edit the list, and `sendMessage`, `replyToMessage` and `forwardMessage` fail 400 `recipient_suppressed` before the send |
+| webhooks | done | `src/core/webhooks.ts`; per-account https endpoints for `message.received`, `message.sent` and `message.bounced`, HMAC-SHA256 signed, delivered and retried through the `intray-webhooks` queue |
 | wait | done | `src/waiter.ts`; `InboxWaiter` is a Durable Object per inbox holding parked `wait` calls and no storage, notified by `ingestInbound` after the row is committed, with the 2-second D1 poll kept as the fallback when `INBOX_WAITER` is unbound or the RPC throws |
 | usage | done | `src/core/usage.ts`, `src/db/usage.ts`, `migrations/0007_usage.sql`; upsert counters for messages sent, messages received and stored bytes, read through `GET /v1/usage` or `get_usage`, enforced as `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` |
 | oauth | done | `src/core/oauth.ts`, `src/http/routes/oauth.ts`, `src/http/oauth-pages.ts`, `migrations/0009_oauth.sql`; RFC 8414 and RFC 9728 metadata, RFC 7591 registration, an authorization-code flow with PKCE behind the existing OTP, and tokens that are ordinary `api_keys` rows |
@@ -73,6 +74,21 @@ What is built, and what a contributor needs to know before touching it. Design r
   Deleting a pre-migration message decrements nothing below zero, because the counter is clamped.
 - Usage is per account. There is no per-org rollup, because there are no orgs yet; once there are,
   a rollup is a `GROUP BY` over the member accounts' rows for a period.
+- Only DSN-shaped bounces are recognized: a `multipart/report; report-type=delivery-status`
+  message, or a `text/plain` one from `mailer-daemon@` or `postmaster@` with `Auto-Submitted:
+  auto-replied` and DSN field lines in its body. A provider that returns prose with no
+  `Final-Recipient`, `Action` and `Status` fields is stored as an ordinary message and suppresses
+  nothing, so the list under-reports rather than over-blocks. The shape Cloudflare's own bounce mail
+  arrives in has not been verified against a live zone.
+- The suppression list is only fed by bounce mail that reaches an inbox on this deployment and by
+  `POST /v1/suppressions`. The `provider` reason and source are reserved for the transports of
+  roadmap item 2, which will feed the same table from SES over SNS, Resend webhooks and DSN mail at
+  the inbound adapter; nothing writes them yet.
+- The send binding keeps its own suppression list, which is not readable and not synchronized with
+  this one. A send that passes our check can still come back `recipient_suppressed` from the
+  binding, and releasing an address here does not release it there.
+- Nothing ages entries out of `suppressions`. A `soft_bounce` row stays until an agent deletes it,
+  and `last_seen_at` is recorded so a later policy can expire on it without another migration.
 - Nothing expires R2 raw MIME objects. They are removed only by the explicit inbox, thread and
   message delete paths, so a busy deployment grows without bound.
 - Threading has no subject-based fallback. A reply from a client that drops both `In-Reply-To` and

@@ -110,6 +110,17 @@ export interface UsageRow {
   updated_at: number;
 }
 
+export interface SuppressionRow {
+  account_id: string;
+  address: string;
+  reason: string;
+  source: string;
+  detail: string | null;
+  message_id: string | null;
+  created_at: number;
+  last_seen_at: number;
+}
+
 export interface WebhookRow {
   webhook_id: string;
   account_id: string;

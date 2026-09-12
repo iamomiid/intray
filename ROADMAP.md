@@ -36,13 +36,6 @@ same `550` and `552` reasons in the response body so the caller can bounce.
 `cloudflare` and instead checks that the chosen provider's secrets are set. Drafts drain
 through the transport. The test suites' `EMAIL` fake becomes a `MailTransport` fake.
 
-## 3. Suppression list and bounce handling
-
-Parse the bounce traffic arriving on the `cf-bounce` MX and maintain a per-account suppression list.
-Sends to a suppressed address fail fast with a clear error instead of burning quota. Transports
-from item 2 feed the same list from their own bounce notifications: SES over SNS, Resend over
-its webhooks, SMTP from DSN mail arriving at the inbound adapter.
-
 ## 4. Spam scoring and virus scanning on inbound
 
 Score inbound mail and label or reject accordingly, so an agent is not handed obvious junk.

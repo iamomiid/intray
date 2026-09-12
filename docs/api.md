@@ -73,7 +73,7 @@ Addresses in `ALLOWED_SIGNUP_EMAILS` are compared lowercased and trimmed. `pnpm 
 
 | Status | Code |
 | --- | --- |
-| 400 | `bad_request`, `invalid_address`, `invalid_code`, `e_recipient_suppressed`, `e_too_many_recipients`, `e_content_too_large`, `e_header_not_allowed` |
+| 400 | `bad_request`, `invalid_address`, `invalid_code`, `recipient_suppressed`, `e_too_many_recipients`, `e_content_too_large`, `e_header_not_allowed` |
 | 401 | `unauthorized` |
 | 403 | `forbidden`, `message_rejected`, `signup_closed` |
 | 404 | `not_found` |
@@ -97,16 +97,23 @@ delete. Creation fails rather than leaving an inbox with no route. A zone that i
 Email Routing rule cap is reported as 409 `conflict` with `inbox limit reached`, the same as the
 per-account `INBOX_LIMIT`.
 
-The four `e_*` codes and `sender_not_verified` come from the send binding and only ever appear on a
-send, reply, forward or draft send: they are the binding's `E_RECIPIENT_SUPPRESSED`,
-`E_TOO_MANY_RECIPIENTS`, `E_CONTENT_TOO_LARGE`, `E_HEADER_NOT_ALLOWED` and
-`E_SENDER_NOT_VERIFIED` lowercased, and `E_RATE_LIMIT_EXCEEDED` becomes `too_many_requests`.
+`recipient_suppressed` is returned when a send, reply, forward or draft send names an address on
+the account's suppression list with reason `hard_bounce`, `manual` or `provider`; the message names
+the address. It is raised before the message leaves the Worker, and the send binding's own
+`E_RECIPIENT_SUPPRESSED` maps onto the same code, so a caller sees one code whichever list the
+address is on. The operator principal is not exempt.
+
+The three `e_*` codes and `sender_not_verified` come from the send binding and only ever appear on a
+send, reply, forward or draft send: they are the binding's `E_TOO_MANY_RECIPIENTS`,
+`E_CONTENT_TOO_LARGE`, `E_HEADER_NOT_ALLOWED` and `E_SENDER_NOT_VERIFIED` lowercased, and
+`E_RATE_LIMIT_EXCEEDED` becomes `too_many_requests`.
 
 ## Status codes
 
-Creates return 201: signup, inbox create, api key create, webhook create, org create, invite
-create, org inbox provision, send, reply, forward, draft create, and draft send. Everything else returns 200. Bodies that are entirely optional (`POST
-/api-keys`, `POST /inboxes`, `.../reply`) may be omitted and are read as `{}`.
+Creates return 201: signup, inbox create, api key create, webhook create, suppression create, org
+create, invite create, org inbox provision, send, reply, forward, draft create, and draft send.
+Everything else returns 200. Bodies that are entirely optional (`POST /api-keys`, `POST /inboxes`,
+`.../reply`) may be omitted and are read as `{}`.
 
 ## Pagination
 
@@ -208,6 +215,20 @@ message lists stay small. The text is read through the attachment text endpoint 
 normalizes them. `attachments` carries `{filename, content_type, size}` only: the bytes are stored
 in R2 and never returned, so a list of drafts stays small. `sent_message_id` is the `message_id` a successful
 send produced, and `error` is `"<code>: <message>"` from the last failed send.
+
+### suppression
+
+`address`, `reason`, `source`, `detail`, `message_id`, `created_at`, `last_seen_at`.
+
+`reason` is `hard_bounce` (a delivery status notification reported a permanent failure),
+`soft_bounce` (a temporary failure or a delay), `manual` (`POST /v1/suppressions`) or `provider` (a
+transport's own bounce feed, unused until pluggable providers land). `source` is `dsn`, `api` or
+`provider`. `detail` is the bounce diagnostic or the note a manual entry carried, capped at 512
+characters; `message_id` is the stored bounce message the entry came from, so the report itself can
+be read with `GET /v1/inboxes/:inbox_id/messages/:message_id`. `created_at` is when the address
+first landed on the list and `last_seen_at` when it last bounced or was last re-suppressed. The
+list belongs to the account, not to an inbox: a bounce for one inbox stops every inbox on the
+account from writing to that address.
 
 ### webhook
 
@@ -515,11 +536,11 @@ statuses.
 | PATCH | `/webhooks/:webhook_id` | `{url?, events?, description?, active?}` | webhook |
 | DELETE | `/webhooks/:webhook_id` | — | `{deleted: true}` |
 
-`url` must be `https://`; anything else is 400 `bad_request`. `events` defaults to both names, and
-every entry must be `message.received` or `message.sent`; an unknown name or an empty array is 400
-`bad_request`. An account holds at most 10 webhooks and the eleventh is 409 `conflict`. `PATCH`
-leaves omitted fields alone, and `active: false` stops delivery without dropping the endpoint or
-rotating its secret.
+`url` must be `https://`; anything else is 400 `bad_request`. `events` defaults to all three names,
+and every entry must be `message.received`, `message.sent` or `message.bounced`; an unknown name or
+an empty array is 400 `bad_request`. An account holds at most 10 webhooks and the eleventh is 409
+`conflict`. `PATCH` leaves omitted fields alone, and `active: false` stops delivery without
+dropping the endpoint or rotating its secret.
 
 #### Event payload
 
@@ -537,7 +558,9 @@ Every delivery is a `POST` carrying this body:
 `data` is the whole message object, the same shape `GET
 /v1/inboxes/:inbox_id/messages/:message_id` returns. `message.received` fires once an inbound
 message and its attachments are stored, `message.sent` once an outbound row is stored, which is
-after the send itself succeeded.
+after the send itself succeeded, and `message.bounced` once an inbound message has been recognized
+as a delivery status notification and its addresses suppressed. A bounce fires both
+`message.bounced` and `message.received`, in that order, because it is a received message too.
 
 The payload is read from storage when the delivery is attempted, not when the event fires, so it
 reflects the message as it stands at delivery time: labels changed between the two arrive with
@@ -585,6 +608,42 @@ doubles with each attempt and is capped at an hour, so the five retries land 1, 
 minutes after their attempt. It is set per message, which is why the queue carries no `retry_delay`
 of its own. Delivery is at-least-once and unordered: deduplicate on `delivery_id`. A delivery for a
 webhook that has since been deleted or deactivated is discarded rather than retried.
+
+### Suppressions
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| GET | `/suppressions` | — | `{items, next_page_token}` of suppression, newest first |
+| POST | `/suppressions` | `{address, detail?}` | suppression |
+| DELETE | `/suppressions/:address` | — | `{deleted: true}` |
+
+`GET` pages by `created_at` and takes `reason` to return one kind alone; an unknown `reason` is 400
+`bad_request`. `POST` stores the address with reason `manual` and source `api`, lowercased and with
+any `+tag` stripped, and replaces whatever entry the address already had; an address that is not an
+address is 400 `invalid_address`. `DELETE` takes the address URL-encoded in the path and answers
+404 `not_found` when nothing is suppressed; it releases the entry whatever put it there, and a
+later bounce puts the address straight back. All three need a full-scope key: a key scoped to an
+inbox gets 403 `forbidden`, because the list belongs to the account.
+
+A send, reply, forward or draft send naming a suppressed address fails with 400
+`recipient_suppressed` before anything is sent, unless the only entry for it is a `soft_bounce`.
+
+### Bounces
+
+An inbound message that is a delivery status notification is stored like any other message and
+labelled `bounce` on top of the usual `received` and `unread`, and each address it reports is
+written to the account's suppression list: a permanent failure as `hard_bounce` with the
+diagnostic, a temporary one as `soft_bounce` with nothing else, which only bumps `last_seen_at`
+when the address is already listed. The `message.bounced` webhook event fires alongside
+`message.received` for that message.
+
+A report is recognized two ways: a `multipart/report; report-type=delivery-status` message, read
+from its `message/delivery-status` part, and a `text/plain` message from `mailer-daemon@` or
+`postmaster@` carrying `Auto-Submitted: auto-replied` and DSN field lines in the body. In both
+cases the fields read per recipient are `Final-Recipient`, `Action`, `Status` and
+`Diagnostic-Code`. A `failed` action with a `5.x.x` status is a hard bounce; a `4.x.x` status or a
+`delayed` action is a soft one; anything else is not treated as a bounce. Nothing about detection
+can fail an ingest: a report that cannot be read is stored as an ordinary message.
 
 ### Usage
 
@@ -770,6 +829,9 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `remove_member` | `org_id`, `account_id` |
 | `provision_inbox` | `org_id`, `account_id`, `username?`, `domain?`, `display_name?` |
 | `list_audit` | `org_id`, `limit?`, `page_token?` |
+| `list_suppressions` | `reason?`, `limit?`, `page_token?` |
+| `add_suppression` | `address`, `detail?` |
+| `remove_suppression` | `address` |
 | `list_webhooks` | — |
 | `create_webhook` | `url`, `events?`, `description?` |
 | `get_webhook` | `webhook_id` |

@@ -17,7 +17,13 @@ export interface ParsedAttachment {
   contentId: string | null;
 }
 
+export interface ParsedHeader {
+  key: string;
+  value: string;
+}
+
 export interface ParsedEmail {
+  headers: ParsedHeader[];
   from: ParsedMailbox | null;
   to: ParsedMailbox[];
   cc: ParsedMailbox[];
@@ -100,6 +106,7 @@ export async function parseMime(raw: Uint8Array): Promise<ParsedEmail> {
   }));
 
   return {
+    headers: email.headers.map((header) => ({ key: header.key, value: header.value })),
     from,
     to: flattenAddresses(email.to),
     cc: flattenAddresses(email.cc),

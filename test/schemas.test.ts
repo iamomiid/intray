@@ -17,6 +17,7 @@ import {
 } from "../src/core/orgs";
 import type { Principal } from "../src/core/principal";
 import { toAccount, toAttachmentDetail } from "../src/core/serialize";
+import { addSuppression, listSuppressions } from "../src/core/suppressions";
 import { getThread, listThreads } from "../src/core/threads";
 import { getUsage } from "../src/core/usage";
 import { createWebhook, getWebhook, listWebhooks } from "../src/core/webhooks";
@@ -44,6 +45,8 @@ import {
   orgDetailObject,
   orgMembershipPage,
   orgObject,
+  suppressionObject,
+  suppressionPage,
   threadDetailObject,
   threadPage,
   usageObject,
@@ -166,6 +169,20 @@ it("parses a serialized webhook against its schema", async () => {
     true,
   );
   expect(webhookPage.parse(await listWebhooks(env, principal)).items).toHaveLength(1);
+});
+
+it("parses a serialized suppression against its schema", async () => {
+  const principal = await seed();
+  const added = suppressionObject.parse(
+    await addSuppression(env, principal, {
+      address: "blocked@example.com",
+      detail: "asked to stop",
+    }),
+  );
+
+  expect(added.reason).toBe("manual");
+  expect(added.message_id).toBeNull();
+  expect(suppressionPage.parse(await listSuppressions(env, principal, {})).items).toHaveLength(1);
 });
 
 it("parses a serialized org, member, invite and audit entry against their schemas", async () => {

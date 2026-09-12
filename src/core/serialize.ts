@@ -10,6 +10,7 @@ import type {
   MessageRow,
   OrgMembershipRow,
   OrgRow,
+  SuppressionRow,
   ThreadRow,
   WebhookRow,
 } from "../db/rows";
@@ -157,6 +158,16 @@ export interface DraftObject {
   error: string | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface SuppressionObject {
+  address: string;
+  reason: string;
+  source: string;
+  detail: string | null;
+  message_id: string | null;
+  created_at: number;
+  last_seen_at: number;
 }
 
 export interface WebhookObject {
@@ -424,6 +435,18 @@ export function toDraft(row: DraftRow): DraftObject {
     error: row.error,
     created_at: row.created_at,
     updated_at: row.updated_at,
+  };
+}
+
+export function toSuppression(row: SuppressionRow): SuppressionObject {
+  return {
+    address: row.address,
+    reason: row.reason,
+    source: row.source,
+    detail: row.detail,
+    message_id: row.message_id,
+    created_at: row.created_at,
+    last_seen_at: row.last_seen_at,
   };
 }
 

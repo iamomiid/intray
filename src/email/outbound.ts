@@ -446,7 +446,6 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 const BAD_REQUEST_CODES: readonly string[] = [
-  "E_RECIPIENT_SUPPRESSED",
   "E_TOO_MANY_RECIPIENTS",
   "E_CONTENT_TOO_LARGE",
   "E_HEADER_NOT_ALLOWED",
@@ -462,6 +461,12 @@ async function sendOrMapError(env: Env, builder: EmailMessageBuilder): Promise<E
         503,
         "sender_not_verified",
         errorMessage(error, "the sending domain is not verified"),
+      );
+    }
+    if (code === "E_RECIPIENT_SUPPRESSED") {
+      throw badRequest(
+        errorMessage(error, "a recipient is on the provider's suppression list"),
+        "recipient_suppressed",
       );
     }
     if (code === "E_RATE_LIMIT_EXCEEDED") {

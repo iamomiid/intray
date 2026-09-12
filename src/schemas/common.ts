@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SUPPRESSION_REASONS, SUPPRESSION_SOURCES } from "../core/suppressions";
 
 export const inboxId = z.string().min(1);
 
@@ -11,6 +12,8 @@ export const draftId = z.string().min(1);
 export const webhookId = z.string().min(1);
 
 export const attachmentId = z.string().min(1);
+
+export const suppressedAddress = z.string().min(1);
 
 export const keyId = z.string().min(1);
 
@@ -48,6 +51,10 @@ export const draftStatus = z.enum(["draft", "scheduled", "sending", "sent", "fai
 export const messageDirection = z.enum(["inbound", "outbound"]);
 
 export const attachmentTextStatus = z.enum(["none", "extracted", "empty", "too_large", "failed"]);
+
+export const suppressionReason = z.enum(SUPPRESSION_REASONS);
+
+export const suppressionSource = z.enum(SUPPRESSION_SOURCES);
 
 export const orgRole = z.enum(["admin", "member"]);
 

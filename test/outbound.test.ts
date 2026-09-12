@@ -534,7 +534,7 @@ it("maps send binding error codes", async () => {
   await rejectsWith(
     sendMessage(withEmail(throwingEmail("E_RECIPIENT_SUPPRESSED")), principal, INBOX_ID, body),
     400,
-    "e_recipient_suppressed",
+    "recipient_suppressed",
   );
   await rejectsWith(
     sendMessage(withEmail(throwingEmail("E_CONTENT_TOO_LARGE")), principal, INBOX_ID, body),

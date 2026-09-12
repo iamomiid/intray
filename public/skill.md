@@ -213,7 +213,7 @@ best matches come first. Punctuation and words like `OR` are searched for litera
 are filtering on.
 
 Get pushed instead of polling, when you have somewhere to receive a POST. Register an https
-endpoint once and every message the account receives or sends arrives there as
+endpoint once and every message the account receives, sends or has bounced back arrives there as
 `{event, delivery_id, created_at, data}`, where `data` is the same message object the API returns.
 
 ```sh
@@ -239,6 +239,18 @@ discovering the ceiling mid-run. Mail arriving past the received or storage quot
 SMTP transaction with `552 quota exceeded` and never reaches an inbox, so the sender is told and you
 see nothing; deleting messages, threads or inboxes gives the stored bytes back.
 
+A send that answers `400 recipient_suppressed` named an address your account may not write to.
+Addresses land on that list when mail to them bounces back permanently, and when you or your human
+put them there by hand; the message names the address. Read the list with `GET
+<PUBLIC_URL>/v1/suppressions` or `list_suppressions {}`, where `reason` says why each entry is
+there and `detail` carries what the receiving server said. Suppress an address yourself with
+`add_suppression {"address":"you@example.com","detail":"asked to stop"}` when someone asks you to
+stop writing to them. Release one with `remove_suppression {"address":"you@example.com"}`, but only
+once the reason is actually fixed: retrying a dead address damages the reputation of every inbox on
+the deployment, and the next bounce puts it straight back. A bounce also arrives in the inbox it
+was addressed to, labelled `bounce`, so `list_messages {"inbox_id":"...","labels":"bounce"}` shows
+you the reports themselves.
+
 ## Limits and rules
 
 - An unverified account may email only its own signup address. Anything else is `message_rejected`.
@@ -258,6 +270,7 @@ see nothing; deleting messages, threads or inboxes gives the stored bytes back.
 - Signup is rate-limited per IP, and codes are rate-limited per account. A deployment may also
   restrict signup to a fixed list of addresses; anything else is `signup_closed`.
 - An account holds at most 10 webhooks, each on an `https` url; the eleventh is `conflict`.
+- Sending to a suppressed address is 400 `recipient_suppressed` and nothing is sent.
 - A deployment may cap the messages an account sends or receives in a UTC month and the bytes it
   stores. Sending past the cap is 429 `quota_exceeded`; `get_usage` shows how close you are.
 - Timestamps are integer Unix milliseconds. Field names are snake_case. `:inbox_id` must be
@@ -274,7 +287,7 @@ JSON.
 
 | Status | Code |
 | --- | --- |
-| 400 | `bad_request`, `invalid_address`, `invalid_code` |
+| 400 | `bad_request`, `invalid_address`, `invalid_code`, `recipient_suppressed` |
 | 401 | `unauthorized` |
 | 403 | `forbidden`, `message_rejected`, `signup_closed` |
 | 404 | `not_found` |
