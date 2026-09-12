@@ -151,8 +151,11 @@ curl -sS -G '<PUBLIC_URL>/v1/inboxes/signups%40agents.example.com/messages/searc
   -H 'Authorization: Bearer it_...' --data-urlencode 'q=invoice'
 ```
 
-MCP: `search_messages {"inbox_id":"...","q":"invoice"}`. Use `list_messages` with `labels`, `from`,
-`to`, `subject`, `since`, and `before` when you know what you are filtering on.
+MCP: `search_messages {"inbox_id":"...","q":"invoice"}`. `q` is plain words over subjects, bodies
+and senders: every word must match, each matches by prefix, so `invoice` finds `invoices`, and the
+best matches come first. Punctuation and words like `OR` are searched for literally. Use
+`list_messages` with `labels`, `from`, `to`, `subject`, `since`, and `before` when you know what you
+are filtering on.
 
 ## Limits and rules
 

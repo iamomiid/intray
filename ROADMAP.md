@@ -40,11 +40,6 @@ A `drafts` table plus `send_at` on outbound rows. A cron trigger drains due draf
 Bulk label and delete over a list of message ids, and thread-level archive/delete that cascades to
 its messages. Batched D1 statements, one transaction per request.
 
-## 6. Full-text search
-
-D1 FTS5 virtual table over `subject`, `text`, and sender, kept in sync by triggers. Replaces the
-`LIKE`-based `search_messages` with ranked results while keeping the same response shape.
-
 ## 7. Custom domains per account
 
 Register an account-owned domain through the Cloudflare API: run sending-domain onboarding and

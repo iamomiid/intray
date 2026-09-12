@@ -35,6 +35,7 @@ import { derivePreview } from "../email/parse";
 import type { Env } from "../env";
 import { splitTag, tagLabel } from "../lib/address";
 import { AppError, badRequest, notFound } from "../lib/errors";
+import { ftsMatch } from "../lib/fts";
 import { newId } from "../lib/ids";
 import {
   LABEL_MAX_CHARS,
@@ -42,7 +43,14 @@ import {
   WAIT_MAX_SECONDS,
   WAIT_POLL_MS,
 } from "../lib/limits";
-import { clampLimit, decodeCursor, type Page, page } from "../lib/pagination";
+import {
+  clampLimit,
+  decodeCursor,
+  decodeOffset,
+  type Page,
+  page,
+  pageFromOffset,
+} from "../lib/pagination";
 import { now } from "../lib/time";
 import { requireInbox } from "./inboxes";
 import { isVerified, type Principal } from "./principal";
@@ -239,14 +247,11 @@ export async function searchMessages(
   query: SearchMessagesQuery,
 ): Promise<Page<MessageObject>> {
   const inbox = await requireInbox(env, principal, inboxId);
-  const q = (query.q ?? "").trim();
-  if (q.length === 0) {
-    throw badRequest("q is required");
-  }
+  const match = ftsMatch(query.q ?? "");
   const limit = clampLimit(query.limit);
-  const cursor = query.page_token === undefined ? null : decodeCursor(query.page_token);
-  const rows = await searchMessageRows(env.DB, inbox.inbox_id, q, { limit, cursor });
-  const paged = page(rows, limit, (row) => ({ at: row.created_at, id: row.message_id }));
+  const offset = query.page_token === undefined ? 0 : decodeOffset(query.page_token);
+  const rows = await searchMessageRows(env.DB, inbox.inbox_id, match, { limit, offset });
+  const paged = pageFromOffset(rows, limit, offset);
   return {
     items: await attachRows(env, paged.items),
     next_page_token: paged.next_page_token,

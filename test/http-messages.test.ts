@@ -180,6 +180,79 @@ it("lists, searches, reads, relabels, and deletes an ingested message", async ()
   expect((await gone.json<ErrorResponse>()).error.message).toBe("message not found");
 });
 
+it("ranks, pages, and validates full-text search", async () => {
+  const account = await signupOver(EMAIL);
+  const auth = { authorization: `Bearer ${account.api_key}` };
+  const base = `/v1/inboxes/${encodeURIComponent(account.inbox_id)}`;
+  const seeds: [string, string][] = [
+    ["Invoice 42", "the status is green"],
+    ["Lunch plans", "the invoice is attached"],
+    ["Invoice for March", "the status is green"],
+  ];
+  for (const [index, [subject, body]] of seeds.entries()) {
+    await ingestInbound(env, {
+      envelopeFrom: "alice@example.com",
+      envelopeTo: account.inbox_id,
+      raw: bytes(
+        plainEml
+          .replace("Subject: Quarterly status", `Subject: ${subject}`)
+          .replace("plain-001@example.com", `plain-${index}@example.com`)
+          .replace("the   status is green.", body),
+      ),
+    });
+  }
+
+  async function search(query: string): Promise<Response> {
+    return SELF.fetch(url(`${base}/messages/search?${query}`), { headers: auth });
+  }
+
+  const ranked = await search("q=invoice");
+  expect(ranked.status).toBe(200);
+  const rankedPage = await ranked.json<MessagePage>();
+  expect(rankedPage.next_page_token).toBeNull();
+  const subjects = rankedPage.items.map((item) => item.subject);
+  expect(subjects).toHaveLength(3);
+  expect(subjects[2]).toBe("Lunch plans");
+  expect([...subjects.slice(0, 2)].sort()).toEqual(["Invoice 42", "Invoice for March"]);
+
+  const both = await search("q=invoice+march");
+  expect((await both.json<MessagePage>()).items.map((item) => item.subject)).toEqual([
+    "Invoice for March",
+  ]);
+
+  const stripped = await search(`q=${encodeURIComponent("(invoice)")}`);
+  expect((await stripped.json<MessagePage>()).items).toHaveLength(3);
+
+  const operators = await search(`q=${encodeURIComponent('invoice* -42 "quoted" (paren)')}`);
+  expect(operators.status).toBe(200);
+  expect((await operators.json<MessagePage>()).items).toHaveLength(0);
+
+  const first = await search("q=invoice&limit=2");
+  const firstPage = await first.json<MessagePage>();
+  expect(firstPage.items).toHaveLength(2);
+  expect(firstPage.next_page_token).not.toBeNull();
+
+  const second = await search(
+    `q=invoice&limit=2&page_token=${encodeURIComponent(firstPage.next_page_token ?? "")}`,
+  );
+  const secondPage = await second.json<MessagePage>();
+  expect(secondPage.items).toHaveLength(1);
+  expect(secondPage.next_page_token).toBeNull();
+  const seen = [...firstPage.items, ...secondPage.items].map((item) => item.message_id);
+  expect(new Set(seen).size).toBe(3);
+
+  const blank = await search(`q=${encodeURIComponent(" -- ")}`);
+  expect(blank.status).toBe(400);
+  const failure = await blank.json<ErrorResponse>();
+  expect(failure.error.code).toBe("bad_request");
+  expect(failure.error.message).toBe("q is required");
+
+  const tooMany = Array.from({ length: 17 }, (_, index) => `term${index}`).join("+");
+  const capped = await search(`q=${tooMany}`);
+  expect(capped.status).toBe(400);
+  expect((await capped.json<ErrorResponse>()).error.code).toBe("bad_request");
+});
+
 it("lists threads and returns one with its messages", async () => {
   const account = await signupOver(EMAIL);
   const auth = { authorization: `Bearer ${account.api_key}` };

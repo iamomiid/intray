@@ -114,7 +114,8 @@ single text block.
 
 ## Data model
 
-One D1 database, one migration until the first release.
+One D1 database. `0001_init.sql` is the released baseline and every later change is its own
+numbered migration.
 
 | Table | Key | Notes |
 | --- | --- | --- |
@@ -125,8 +126,17 @@ One D1 database, one migration until the first release.
 | `threads` | `thread_id` (`thr_`) | `subject`, `last_message_at`, `message_count`, `participants_json` |
 | `messages` | `message_id` (`msg_`) | `direction`, RFC identifiers, address columns, bodies, `labels_json`, `raw_key` |
 | `attachments` | `attachment_id` (`att_`) | `r2_key`, `filename`, `content_type`, `size`, `inline`, `content_id` |
+| `messages_fts` | `message_id` (UNINDEXED) | FTS5 index over `subject`, `text`, `from_addr`, `from_name`; `inbox_id` UNINDEXED |
 
 Everything hangs off `account_id` through its inbox, and every child row cascades on delete.
+
+`messages_fts` is a standalone FTS5 table, not an external-content one: `messages` has a TEXT
+primary key, so its implicit integer rowid is not a stable `content_rowid` and an external-content
+index could silently drift. It carries its own copy of the indexed text and is kept in sync by
+`AFTER INSERT`, `AFTER DELETE` and `AFTER UPDATE OF subject, text, from_addr, from_name` triggers
+on `messages`, all keyed on `message_id`. The tokenizer is `unicode61 remove_diacritics 2`: it
+folds case and diacritics across Unicode and splits on every non-alphanumeric character, which
+turns an address into `alice`, `example`, `com` and makes a sender searchable by any part of it.
 
 R2 holds raw MIME at `raw/{message_id}.eml` and attachment bytes at `att/{message_id}/{n}`, where
 `n` is the attachment's index in the parsed message. An outbound message has no raw object and uses
@@ -165,7 +175,9 @@ never be able to bounce mail or write an oversized row.
 
 **Lists are keyset-paginated.** A query fetches `limit + 1` rows and hands them to `page(rows,
 limit, toCursor)` from `src/lib/pagination.ts`, which trims and emits an opaque `next_page_token`
-encoding the last row's sort key, so a page is stable while new mail arrives at the head.
+encoding the last row's sort key, so a page is stable while new mail arrives at the head. Message
+search is the one exception: it orders by relevance, which is not a key, so its token encodes an
+offset into the result set instead.
 
 **HTTP routes and MCP tools are thin adapters over `src/core`.** The same operations are exposed
 twice, so implementing them per adapter would let validation, error codes and semantics drift. Core
