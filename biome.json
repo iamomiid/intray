@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!node_modules", "!.wrangler", "!dist"]
+    "includes": ["**", "!node_modules", "!.wrangler", "!dist", "!.claude"]
   },
   "formatter": {
     "enabled": true,
