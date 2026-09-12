@@ -437,6 +437,10 @@ The Worker must exist before Email Routing can be pointed at it, so deploy befor
 `PUBLIC_URL` was not known before the first deploy, set it from the URL the deploy prints and
 deploy again.
 
+The deploy also creates the `InboxWaiter` Durable Object class through the `migrations` entry in
+`wrangler.jsonc`, which `wait_for_message` uses to wake on an arriving message. There is nothing to
+provision for it, and no step of your own to run.
+
 ### 7. Enable inbound: Email Routing
 
 In the Cloudflare dashboard, open the zone, then **Email** → **Email Routing**, and enable it.

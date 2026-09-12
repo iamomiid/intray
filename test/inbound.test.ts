@@ -6,6 +6,7 @@ import { insertInbox } from "../src/db/inboxes";
 import { getMessage } from "../src/db/messages";
 import { getThread } from "../src/db/threads";
 import { handleEmail, InboundRejected, ingestInbound } from "../src/email/inbound";
+import type { InboxWaiter } from "../src/waiter";
 import htmlAttachmentEml from "./fixtures/html-attachment.eml?raw";
 import noMessageIdEml from "./fixtures/no-message-id.eml?raw";
 import plainEml from "./fixtures/plain.eml?raw";
@@ -17,6 +18,17 @@ const INBOX_ID = "agent@intray.example";
 
 function bytes(text: string): Uint8Array {
   return new TextEncoder().encode(text.replace(/\r?\n/g, "\r\n"));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function unavailableWaiter(): DurableObjectNamespace<InboxWaiter> {
+  return {
+    idFromName: () => ({}),
+    get: () => ({ notify: () => Promise.reject(new Error("waiter unavailable")) }),
+  } as unknown as DurableObjectNamespace<InboxWaiter>;
 }
 
 class FakeEmailMessage implements ForwardableEmailMessage {
@@ -223,4 +235,34 @@ it("sets an smtp reject reason on the email message", async () => {
   );
   await handleEmail(message, env, createExecutionContext());
   expect(message.rejected).toBe("550 no such inbox");
+});
+
+it("wakes a waiter on the inbox object once the message is stored", async () => {
+  const namespace = env.INBOX_WAITER;
+  if (namespace === undefined) {
+    throw new Error("INBOX_WAITER is not bound");
+  }
+  const stub = namespace.get(namespace.idFromName(INBOX_ID));
+  const pending = stub.wait(10_000, Date.now());
+  await sleep(50);
+  await ingestInbound(env, {
+    envelopeFrom: "alice@example.com",
+    envelopeTo: INBOX_ID,
+    raw: bytes(plainEml),
+  });
+
+  await expect(pending).resolves.toBe(true);
+});
+
+it("stores the message even when the waiter rejects the notify", async () => {
+  const result = await ingestInbound(
+    { ...env, INBOX_WAITER: unavailableWaiter() },
+    {
+      envelopeFrom: "alice@example.com",
+      envelopeTo: INBOX_ID,
+      raw: bytes(plainEml),
+    },
+  );
+
+  expect(await getMessage(env.DB, INBOX_ID, result.messageId)).not.toBeNull();
 });

@@ -70,11 +70,6 @@ Sends to a suppressed address fail fast with a clear error instead of burning qu
 from item 3 feed the same list from their own bounce notifications: SES over SNS, Resend over
 its webhooks, SMTP from DSN mail arriving at the inbound adapter.
 
-## 5. Per-inbox Durable Object
-
-Replace `wait_for_message`'s D1 polling with a push-style wait backed by a Durable Object per inbox.
-Lower latency and no polling cost; the D1 path stays as the fallback.
-
 ## 6. OAuth for MCP clients
 
 Authorization-code flow for MCP clients that cannot set static headers, issuing tokens that map to

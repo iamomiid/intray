@@ -18,6 +18,20 @@
       "migrations_dir": "migrations"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "INBOX_WAITER",
+        "class_name": "InboxWaiter"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["InboxWaiter"]
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "BUCKET",

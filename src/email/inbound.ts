@@ -11,6 +11,7 @@ import { normalizeAddress, splitTag, tagLabel } from "../lib/address";
 import { newId } from "../lib/ids";
 import { INBOUND_MAX_BYTES } from "../lib/limits";
 import { now } from "../lib/time";
+import { notifyInbox } from "../waiter";
 import { type ParsedEmail, type ParsedMailbox, parseMime } from "./parse";
 import { resolveThreadId } from "./threading";
 
@@ -179,6 +180,7 @@ export async function ingestInbound(env: Env, input: InboundInput): Promise<Inbo
   });
 
   await emitEvent(env, inbox.account_id, "message.received", inbox.inbox_id, messageId);
+  await notifyInbox(env, inbox.inbox_id, createdAt);
   await recordReceived(
     env.DB,
     inbox.account_id,

@@ -28,6 +28,7 @@ What is built, and what a contributor needs to know before touching it. Design r
 | drafts | done | `src/core/drafts.ts`, `migrations/0004_drafts.sql`; create, list, get, update, delete, send now, and a one-minute cron trigger draining due scheduled drafts through `sendMessage` and `replyToMessage` |
 | orgs | done | `src/core/orgs.ts`, `src/core/audit.ts`, `migrations/0006_company.sql`; `ADMIN_SECRET` bootstraps one org, invites are accepted through signup, admins provision inboxes to members, API keys take `inbox:` scopes enforced in core, and an append-only audit log covers the admin actions |
 | webhooks | done | `src/core/webhooks.ts`; per-account https endpoints for `message.received` and `message.sent`, HMAC-SHA256 signed, delivered and retried through the `intray-webhooks` queue |
+| wait | done | `src/waiter.ts`; `InboxWaiter` is a Durable Object per inbox holding parked `wait` calls and no storage, notified by `ingestInbound` after the row is committed, with the 2-second D1 poll kept as the fallback when `INBOX_WAITER` is unbound or the RPC throws |
 | usage | done | `src/core/usage.ts`, `src/db/usage.ts`, `migrations/0007_usage.sql`; upsert counters for messages sent, messages received and stored bytes, read through `GET /v1/usage` or `get_usage`, enforced as `QUOTA_MESSAGES_SENT_PER_MONTH`, `QUOTA_MESSAGES_RECEIVED_PER_MONTH` and `QUOTA_STORAGE_BYTES` |
 | attachments | partial | `core.listAttachments` has no HTTP route; attachments are embedded on message objects and downloaded one at a time. Text is extracted from PDF and docx on ingest into `attachments.text`, read through `GET .../attachments/:attachment_id/text` or `get_attachment`; `text_status` rides on every attachment object |
 
@@ -98,6 +99,16 @@ What is built, and what a contributor needs to know before touching it. Design r
   "too many SQL variables". List arguments therefore go through `json_each` on a single JSON
   parameter, `WHERE id IN (SELECT value FROM json_each(?))` bound with `JSON.stringify(ids)`, rather
   than a spliced `IN (?, ?, ...)`.
+- The Durable Object needs nothing extra from the vitest pool: the binding and the `migrations`
+  entry in `wrangler.jsonc` are enough, and `runInDurableObject` from `cloudflare:test` reaches the
+  instance. Two things bite. `DurableObjectStub<T>` does not infer the callback's instance type, so
+  the call needs explicit type arguments, `runInDurableObject<InboxWaiter, boolean>(stub, ...)`. And
+  `resetDatabase` clears D1 only: an object's in-memory waiters survive into the next test in the
+  file, so a suite that parks a wait asserts it is gone before moving on.
+- A test that writes a message row straight into D1 does not notify the waiter, so a `wait` parked
+  on the object sleeps until its timeout instead of returning. Drive the push path with
+  `ingestInbound`, and reserve the direct insert for the polling fallback, which the two fallback
+  tests exercise with `{...env, INBOX_WAITER: undefined}` and with a namespace whose `wait` rejects.
 - The pool does not roll D1 back between tests in a file, so writes leak from one test to the next.
   `test/support.ts` exports `resetDatabase(db)`; call it in `beforeEach` of any suite that writes.
   It does not clean up R2 objects.
