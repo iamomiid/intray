@@ -25,6 +25,7 @@ MCP  /mcp           ─┘                ├─► R2, env.EMAIL.send
 | services | `src/core/` | the only place with business logic |
 | storage | `src/db/` | typed D1 helpers, one module per table |
 | mail | `src/email/` | inbound ingest, threading, MIME parsing, outbound builders |
+| schemas | `src/schemas/` | zod input and response shapes shared by MCP and the OpenAPI document |
 | helpers | `src/lib/` | ids, otp, hash, errors, pagination, address, limits, rfc, time |
 | setup | `scripts/` | the operator command that provisions a deployment |
 | cron | `triggers.crons` in `wrangler.jsonc` | `* * * * *`, calling `scheduled()` and so `drainDueDrafts` |
@@ -291,6 +292,34 @@ registered depends on the result: three onboarding tools without a live key, for
 Server instructions differ by auth state, and an operator connection gets a note saying no signup
 is needed. Tools call the same `src/core` functions the HTTP routes call and return JSON in a
 single text block.
+
+## Schemas and the OpenAPI document
+
+`src/schemas/` is the one place a request or a response shape is written down: one module per
+resource for the inputs the MCP tools validate with, and `objects.ts` for the response objects,
+which mirror `src/core/serialize.ts` field for field. Nothing in it imports an adapter, so both
+adapters and the document can depend on it. Each MCP tool passes a schema from there as its
+`inputSchema` rather than building one inline, and each REST body, query and path parameter in the
+document is the same schema with the fields that surface carries: `send_message_body` keeps
+`headers`, which MCP has no argument for, and the MCP input adds the `inbox_id` the REST path
+already names.
+
+`src/http/openapi.ts` turns a declarative route table — method, path, summary, the schemas for path
+params, query, headers, body and response, the success status, and which errors apply — into an
+OpenAPI 3.1 document. Headers are in the table for `POST /v1/orgs` alone, which takes its
+`x-admin-secret` in a header rather than the body. zod 4's `z.toJSONSchema` does the conversion, so no generator is bundled: the response
+objects and request bodies go into a `z.registry` and one call over the registry emits
+`components.schemas` with `$ref`s between them, while parameters are converted one object at a time
+and split into OpenAPI parameter objects. `servers` is `PUBLIC_URL`, so the document is built once
+per isolate and cached under that key, and `GET /openapi.json` in `src/http/routes/openapi.ts`
+serves the cached string unauthenticated.
+
+`test/openapi.test.ts` walks `app.routes`, drops the `ALL` entries the auth middleware registers,
+rewrites Hono's `:param` to `{param}` and asserts that set equals the set of operations in the
+document, in both directions. That is what keeps the document honest: a route added without a table
+entry, or a table entry for a route that was removed, fails the suite. `test/schemas.test.ts` is
+the other half — it serializes a real row of each kind and parses it against its schema, and the
+schemas are strict, so a field added to `serialize.ts` and not to `objects.ts` fails too.
 
 ## Data model
 

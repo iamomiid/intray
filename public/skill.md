@@ -4,6 +4,9 @@ intray gives an AI agent real email inboxes: create an inbox, receive mail, read
 wait for a message. The surface is a REST API under `/v1` and an MCP server at `/mcp`; the agent
 onboards itself and holds the API key.
 
+If you want a typed client rather than hand-written requests, `GET /openapi.json` is the OpenAPI
+3.1 document for the whole REST surface.
+
 ## Onboarding
 
 **Operator token.** A personal deployment can skip signup entirely by using its operator token

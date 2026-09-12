@@ -1,5 +1,4 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { z } from "zod";
 import skillMd from "../../public/skill.md";
 import {
   authenticate,
@@ -54,40 +53,49 @@ import {
 import type { Principal } from "../core/principal";
 import { config, type Env } from "../env";
 import { unauthorized } from "../lib/errors";
+import {
+  attachmentInput,
+  batchDeleteInput,
+  batchLabelsInput,
+  createApiKeyInput,
+  createDraftInput,
+  createInboxInput,
+  createInviteInput,
+  createOrgInput,
+  createWebhookInput,
+  draftInput,
+  emptyInput,
+  forwardInput,
+  inboxInput,
+  inviteInput,
+  listAuditInput,
+  listDraftsInput,
+  listInboxesInput,
+  listMessagesInput,
+  listOrgsInput,
+  listThreadsInput,
+  memberInput,
+  messageInput,
+  orgInput,
+  provisionInboxInput,
+  replyInput,
+  searchMessagesInput,
+  sendMessageInput,
+  signupInput,
+  threadInput,
+  updateDraftInput,
+  updateMemberInput,
+  updateMessageLabelsInput,
+  updateThreadLabelsInput,
+  updateWebhookInput,
+  usageInput,
+  verifyInput,
+  waitForMessageInput,
+  webhookInput,
+} from "../schemas/index";
 import { run } from "./result";
 
 const TEXT_BODY_MAX_BYTES = 64 * 1024;
-
-const inboxId = z.string().min(1);
-
-const messageId = z.string().min(1);
-
-const threadId = z.string().min(1);
-
-const webhookId = z.string().min(1);
-
-const orgId = z.string().min(1);
-
-const accountId = z.string().min(1);
-
-const labels = z.array(z.string());
-
-const recipients = z.union([z.string(), z.array(z.string())]);
-
-const senderAddress = z.string().optional();
-
-const attachments = z.array(
-  z.object({
-    filename: z.string(),
-    content_type: z.string(),
-    content: z.string(),
-  }),
-);
-
-const pageArgs = {
-  limit: z.number().optional(),
-  page_token: z.string().optional(),
-};
 
 async function attachmentDetail(
   env: Env,
@@ -126,10 +134,7 @@ function registerOnboardingTools(server: McpServer, env: Env): void {
       title: "Sign up",
       description:
         "Create an account for a human's email address. Returns an api_key, an inbox_id, and mails a 6-digit code to that address. For an address that already has an account the returned key is pending (key_pending true) and does nothing until verify succeeds; keys already in use keep working until then.",
-      inputSchema: z.object({
-        email: z.string(),
-        username: z.string().optional(),
-      }),
+      inputSchema: signupInput,
     },
     (args) => run(() => signup(env, { email: args.email, username: args.username }, {})),
   );
@@ -140,10 +145,7 @@ function registerOnboardingTools(server: McpServer, env: Env): void {
       title: "Verify",
       description:
         "Confirm the 6-digit code emailed by signup. Takes the api_key signup returned. A key from a repeat signup stays pending until this succeeds, and activating it revokes every other key on the account. Until the account is verified it can only email its own signup address.",
-      inputSchema: z.object({
-        api_key: z.string(),
-        code: z.string(),
-      }),
+      inputSchema: verifyInput,
     },
     (args) =>
       run(async () => {
@@ -160,7 +162,7 @@ function registerOnboardingTools(server: McpServer, env: Env): void {
     {
       title: "Read onboarding docs",
       description: "Return the full onboarding and usage instructions as markdown.",
-      inputSchema: z.object({}),
+      inputSchema: emptyInput,
     },
     () => run(async () => ({ markdown: skillMd })),
   );
@@ -172,7 +174,7 @@ function registerAccountTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Account",
       description: "Return the account, its inbox count, and the key id this request used.",
-      inputSchema: z.object({}),
+      inputSchema: emptyInput,
     },
     () => run(() => me(env, principal)),
   );
@@ -185,10 +187,7 @@ function registerAccountTools(server: McpServer, env: Env, principal: Principal)
         'Mint another API key. The full key is returned only here. scopes defaults to ["*"];' +
         ' pass ["inbox:<address>"] entries to mint a key that reaches those inboxes alone and no' +
         " account-level operation. Every inbox named must be one this account owns.",
-      inputSchema: z.object({
-        name: z.string().optional(),
-        scopes: z.array(z.string()).optional(),
-      }),
+      inputSchema: createApiKeyInput,
     },
     (args) => run(() => createApiKey(env, principal, { name: args.name, scopes: args.scopes })),
   );
@@ -202,7 +201,7 @@ function registerAccountTools(server: McpServer, env: Env, principal: Principal)
         " storage bytes held, inboxes held, and the quota for each. A null limit is unlimited." +
         " Sending past the sent quota is quota_exceeded; mail arriving past the received or" +
         " storage quota is rejected at the SMTP transaction and never reaches an inbox.",
-      inputSchema: z.object({}),
+      inputSchema: usageInput,
     },
     () => run(() => getUsage(env, principal)),
   );
@@ -214,7 +213,7 @@ function registerInboxTools(server: McpServer, env: Env, principal: Principal): 
     {
       title: "List inboxes",
       description: "List this account's inboxes, newest first.",
-      inputSchema: z.object(pageArgs),
+      inputSchema: listInboxesInput,
     },
     (args) => run(() => listInboxes(env, principal, args)),
   );
@@ -227,11 +226,7 @@ function registerInboxTools(server: McpServer, env: Env, principal: Principal): 
         "Create an inbox. username defaults to a generated one, domain to the first served domain." +
         " display_name becomes the From name on mail this inbox sends, so set it to a name a human" +
         " recipient would recognize; a bare address alone reads as less trustworthy.",
-      inputSchema: z.object({
-        username: z.string().optional(),
-        domain: z.string().optional(),
-        display_name: z.string().optional(),
-      }),
+      inputSchema: createInboxInput,
     },
     (args) => run(() => createInbox(env, principal, args)),
   );
@@ -241,7 +236,7 @@ function registerInboxTools(server: McpServer, env: Env, principal: Principal): 
     {
       title: "Get inbox",
       description: "Fetch one inbox by its full address.",
-      inputSchema: z.object({ inbox_id: inboxId }),
+      inputSchema: inboxInput,
     },
     (args) => run(() => getInbox(env, principal, args.inbox_id)),
   );
@@ -251,7 +246,7 @@ function registerInboxTools(server: McpServer, env: Env, principal: Principal): 
     {
       title: "Delete inbox",
       description: "Delete an inbox with every thread, message, and stored object under it.",
-      inputSchema: z.object({ inbox_id: inboxId }),
+      inputSchema: inboxInput,
     },
     (args) => run(() => deleteInbox(env, principal, args.inbox_id)),
   );
@@ -263,7 +258,7 @@ function registerThreadTools(server: McpServer, env: Env, principal: Principal):
     {
       title: "List threads",
       description: "List an inbox's threads by last_message_at descending.",
-      inputSchema: z.object({ inbox_id: inboxId, ...pageArgs }),
+      inputSchema: listThreadsInput,
     },
     (args) => run(() => listThreads(env, principal, args.inbox_id, args)),
   );
@@ -273,7 +268,7 @@ function registerThreadTools(server: McpServer, env: Env, principal: Principal):
     {
       title: "Get thread",
       description: "Fetch one thread with its messages ordered by created_at.",
-      inputSchema: z.object({ inbox_id: inboxId, thread_id: threadId }),
+      inputSchema: threadInput,
     },
     (args) => run(() => getThread(env, principal, args.inbox_id, args.thread_id)),
   );
@@ -284,12 +279,7 @@ function registerThreadTools(server: McpServer, env: Env, principal: Principal):
       title: "Update thread labels",
       description:
         'Add and remove labels across every message in a thread. Archive a thread with add ["archived"] and remove ["unread"]. Returns the thread with its messages.',
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        thread_id: threadId,
-        add: labels.optional(),
-        remove: labels.optional(),
-      }),
+      inputSchema: updateThreadLabelsInput,
     },
     (args) => run(() => updateThreadLabels(env, principal, args.inbox_id, args.thread_id, args)),
   );
@@ -299,7 +289,7 @@ function registerThreadTools(server: McpServer, env: Env, principal: Principal):
     {
       title: "Delete thread",
       description: "Delete a thread with every message under it and their stored objects.",
-      inputSchema: z.object({ inbox_id: inboxId, thread_id: threadId }),
+      inputSchema: threadInput,
     },
     (args) => run(() => deleteThread(env, principal, args.inbox_id, args.thread_id)),
   );
@@ -312,16 +302,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
       title: "List messages",
       description:
         "List an inbox's messages, newest first. labels matches messages carrying all of them; since and before bound created_at in Unix milliseconds.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        labels: z.union([z.string(), z.array(z.string())]).optional(),
-        from: z.string().optional(),
-        to: z.string().optional(),
-        subject: z.string().optional(),
-        since: z.number().optional(),
-        before: z.number().optional(),
-        ...pageArgs,
-      }),
+      inputSchema: listMessagesInput,
     },
     (args) => run(() => listMessages(env, principal, args.inbox_id, args)),
   );
@@ -333,7 +314,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
       description:
         "Full-text search over an inbox's subjects, bodies and senders. Give plain words: " +
         "every word must match, a word matches by prefix, and results come back by relevance.",
-      inputSchema: z.object({ inbox_id: inboxId, q: z.string(), ...pageArgs }),
+      inputSchema: searchMessagesInput,
     },
     (args) => run(() => searchMessages(env, principal, args.inbox_id, args)),
   );
@@ -343,7 +324,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Get message",
       description: "Fetch one message with its attachment metadata.",
-      inputSchema: z.object({ inbox_id: inboxId, message_id: messageId }),
+      inputSchema: messageInput,
     },
     (args) => run(() => getMessage(env, principal, args.inbox_id, args.message_id)),
   );
@@ -354,11 +335,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
       title: "Wait for message",
       description:
         "Block until a message with created_at greater than since arrives, or until timeout seconds elapse. since defaults to now, timeout to 30 and caps at 55. Returns an empty items array on timeout.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        since: z.number().optional(),
-        timeout: z.number().optional(),
-      }),
+      inputSchema: waitForMessageInput,
     },
     (args) => run(() => waitForMessage(env, principal, args.inbox_id, args)),
   );
@@ -368,11 +345,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Update message labels",
       description: "Replace a message's labels with the given set.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        message_id: messageId,
-        labels: z.array(z.string()),
-      }),
+      inputSchema: updateMessageLabelsInput,
     },
     (args) =>
       run(() =>
@@ -387,7 +360,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Delete message",
       description: "Delete a message and its stored objects.",
-      inputSchema: z.object({ inbox_id: inboxId, message_id: messageId }),
+      inputSchema: messageInput,
     },
     (args) => run(() => deleteMessage(env, principal, args.inbox_id, args.message_id)),
   );
@@ -398,12 +371,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
       title: "Batch update labels",
       description:
         "Add and remove labels across up to 100 messages in one call. Returns the updated messages in the order given. Every id must belong to the inbox; one that does not fails the whole call and changes nothing.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        message_ids: z.array(messageId),
-        add: labels.optional(),
-        remove: labels.optional(),
-      }),
+      inputSchema: batchLabelsInput,
     },
     (args) => run(() => batchUpdateLabels(env, principal, args.inbox_id, args)),
   );
@@ -414,7 +382,7 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
       title: "Batch delete messages",
       description:
         "Delete up to 100 messages and their stored objects in one call, dropping threads left empty. Every id must belong to the inbox; one that does not fails the whole call and changes nothing.",
-      inputSchema: z.object({ inbox_id: inboxId, message_ids: z.array(messageId) }),
+      inputSchema: batchDeleteInput,
     },
     (args) => run(() => batchDeleteMessages(env, principal, args.inbox_id, args)),
   );
@@ -425,17 +393,11 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
       title: "Get attachment",
       description:
         "Return an attachment's metadata, a download_url, plus its text: the text extracted from a PDF or docx on ingest, otherwise the decoded body when the content type is text/* and it is at most 64 KiB. text_status says why text is absent.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        message_id: messageId,
-        attachment_id: z.string().min(1),
-      }),
+      inputSchema: attachmentInput,
     },
     (args) => run(() => attachmentDetail(env, principal, args)),
   );
 }
-
-const draftId = z.string().min(1);
 
 function registerDraftTools(server: McpServer, env: Env, principal: Principal): void {
   server.registerTool(
@@ -448,22 +410,7 @@ function registerDraftTools(server: McpServer, env: Env, principal: Principal): 
         " validated exactly as the send would validate it, so an unsendable draft is refused here." +
         " send_at is Unix milliseconds in the future and schedules the draft; a cron trigger sends it" +
         " within a minute of that time.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        kind: z.enum(["send", "reply"]).optional(),
-        parent_message_id: messageId.optional(),
-        from: senderAddress,
-        to: recipients.optional(),
-        cc: recipients.optional(),
-        bcc: recipients.optional(),
-        subject: z.string().optional(),
-        text: z.string().optional(),
-        html: z.string().optional(),
-        reply_to: z.string().optional(),
-        reply_all: z.boolean().optional(),
-        attachments: attachments.optional(),
-        send_at: z.number().optional(),
-      }),
+      inputSchema: createDraftInput,
     },
     (args) => run(() => createDraft(env, principal, args.inbox_id, args)),
   );
@@ -475,11 +422,7 @@ function registerDraftTools(server: McpServer, env: Env, principal: Principal): 
       description:
         "List an inbox's drafts, most recently updated first. status filters by draft, scheduled," +
         " sending, sent or failed.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        status: z.enum(["draft", "scheduled", "sending", "sent", "failed"]).optional(),
-        ...pageArgs,
-      }),
+      inputSchema: listDraftsInput,
     },
     (args) => run(() => listDrafts(env, principal, args.inbox_id, args)),
   );
@@ -489,7 +432,7 @@ function registerDraftTools(server: McpServer, env: Env, principal: Principal): 
     {
       title: "Get draft",
       description: "Fetch one draft with its status, schedule and last error.",
-      inputSchema: z.object({ inbox_id: inboxId, draft_id: draftId }),
+      inputSchema: draftInput,
     },
     (args) => run(() => getDraft(env, principal, args.inbox_id, args.draft_id)),
   );
@@ -502,21 +445,7 @@ function registerDraftTools(server: McpServer, env: Env, principal: Principal): 
         "Change any body field of a draft; fields left out keep their value and the result is" +
         " re-validated as a send. send_at reschedules, send_at null unschedules, and a past schedule" +
         " is dropped. A sending or sent draft answers conflict.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        draft_id: draftId,
-        from: senderAddress,
-        to: recipients.optional(),
-        cc: recipients.optional(),
-        bcc: recipients.optional(),
-        subject: z.string().optional(),
-        text: z.string().optional(),
-        html: z.string().optional(),
-        reply_to: z.string().optional(),
-        reply_all: z.boolean().optional(),
-        attachments: attachments.optional(),
-        send_at: z.number().nullable().optional(),
-      }),
+      inputSchema: updateDraftInput,
     },
     (args) => run(() => updateDraft(env, principal, args.inbox_id, args.draft_id, args)),
   );
@@ -526,7 +455,7 @@ function registerDraftTools(server: McpServer, env: Env, principal: Principal): 
     {
       title: "Delete draft",
       description: "Delete a draft. A draft being sent right now answers conflict.",
-      inputSchema: z.object({ inbox_id: inboxId, draft_id: draftId }),
+      inputSchema: draftInput,
     },
     (args) => run(() => deleteDraft(env, principal, args.inbox_id, args.draft_id)),
   );
@@ -538,7 +467,7 @@ function registerDraftTools(server: McpServer, env: Env, principal: Principal): 
       description:
         "Send a draft now, whatever its send_at, through the same path send_message and" +
         " reply_to_message use. Returns the sent message and marks the draft sent.",
-      inputSchema: z.object({ inbox_id: inboxId, draft_id: draftId }),
+      inputSchema: draftInput,
     },
     (args) => run(() => sendDraft(env, principal, args.inbox_id, args.draft_id)),
   );
@@ -551,18 +480,7 @@ function registerSendingTools(server: McpServer, env: Env, principal: Principal)
       title: "Send message",
       description:
         "Send a new message from an inbox. to, cc, and bcc take a string or an array; at most 50 recipients and 32 attachments, and the whole message must stay under 5 MiB. from may be the inbox address with a +tag, which labels this message and every reply that comes back to it.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        from: senderAddress,
-        to: recipients,
-        cc: recipients.optional(),
-        bcc: recipients.optional(),
-        subject: z.string(),
-        text: z.string().optional(),
-        html: z.string().optional(),
-        reply_to: z.string().optional(),
-        attachments: attachments.optional(),
-      }),
+      inputSchema: sendMessageInput,
     },
     (args) => run(() => sendMessage(env, principal, args.inbox_id, args)),
   );
@@ -573,15 +491,7 @@ function registerSendingTools(server: McpServer, env: Env, principal: Principal)
       title: "Reply to message",
       description:
         "Reply in the parent's thread. reply_all merges the parent's from, to, and cc minus the inbox's own address. from may be the inbox address with a +tag, which labels this message and every reply that comes back to it.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        message_id: messageId,
-        from: senderAddress,
-        text: z.string().optional(),
-        html: z.string().optional(),
-        reply_all: z.boolean().optional(),
-        attachments: attachments.optional(),
-      }),
+      inputSchema: replyInput,
     },
     (args) => run(() => replyToMessage(env, principal, args.inbox_id, args.message_id, args)),
   );
@@ -592,15 +502,7 @@ function registerSendingTools(server: McpServer, env: Env, principal: Principal)
       title: "Forward message",
       description:
         "Forward a message with its attachments and the original quoted below text. from may be the inbox address with a +tag, which labels this message and every reply that comes back to it.",
-      inputSchema: z.object({
-        inbox_id: inboxId,
-        message_id: messageId,
-        from: senderAddress,
-        to: recipients,
-        cc: recipients.optional(),
-        bcc: recipients.optional(),
-        text: z.string().optional(),
-      }),
+      inputSchema: forwardInput,
     },
     (args) => run(() => forwardMessage(env, principal, args.inbox_id, args.message_id, args)),
   );
@@ -615,11 +517,7 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
         "Register an https endpoint to receive message.received and message.sent events for this" +
         " account. events defaults to both. The signing secret is returned only here: store it and" +
         " verify the x-intray-signature header on every delivery. At most 10 webhooks per account.",
-      inputSchema: z.object({
-        url: z.string(),
-        events: z.array(z.string()).optional(),
-        description: z.string().optional(),
-      }),
+      inputSchema: createWebhookInput,
     },
     (args) => run(() => createWebhook(env, principal, args)),
   );
@@ -629,7 +527,7 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "List webhooks",
       description: "List this account's webhooks, newest first. The secret is never returned.",
-      inputSchema: z.object({}),
+      inputSchema: emptyInput,
     },
     () => run(() => listWebhooks(env, principal)),
   );
@@ -639,7 +537,7 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Get webhook",
       description: "Fetch one webhook by id. The secret is never returned.",
-      inputSchema: z.object({ webhook_id: webhookId }),
+      inputSchema: webhookInput,
     },
     (args) => run(() => getWebhook(env, principal, args.webhook_id)),
   );
@@ -651,13 +549,7 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
       description:
         "Change a webhook's url, events, description, or active flag. Omitted fields are left" +
         " alone. active false stops delivery without deleting the endpoint or rotating its secret.",
-      inputSchema: z.object({
-        webhook_id: webhookId,
-        url: z.string().optional(),
-        events: z.array(z.string()).optional(),
-        description: z.string().optional(),
-        active: z.boolean().optional(),
-      }),
+      inputSchema: updateWebhookInput,
     },
     (args) => run(() => updateWebhook(env, principal, args.webhook_id, args)),
   );
@@ -667,7 +559,7 @@ function registerWebhookTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "Delete webhook",
       description: "Delete a webhook. Queued deliveries for it stop.",
-      inputSchema: z.object({ webhook_id: webhookId }),
+      inputSchema: webhookInput,
     },
     (args) => run(() => deleteWebhook(env, principal, args.webhook_id)),
   );
@@ -682,7 +574,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
         "Bootstrap company mode: create the deployment's org and become its admin. Takes the" +
         " deployment's ADMIN_SECRET. Only one org exists per deployment, so a second call answers" +
         " conflict, and once it exists signup is invite-only.",
-      inputSchema: z.object({ name: z.string(), admin_secret: z.string() }),
+      inputSchema: createOrgInput,
     },
     (args) => run(() => createOrg(env, principal, args)),
   );
@@ -692,7 +584,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
     {
       title: "List orgs",
       description: "List the orgs this account belongs to with its role in each.",
-      inputSchema: z.object({}),
+      inputSchema: listOrgsInput,
     },
     () => run(() => listOrgs(env, principal)),
   );
@@ -702,7 +594,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
     {
       title: "Get org",
       description: "Fetch one org with its member count.",
-      inputSchema: z.object({ org_id: orgId }),
+      inputSchema: orgInput,
     },
     (args) => run(() => getOrg(env, principal, args.org_id)),
   );
@@ -715,11 +607,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
         "Invite an email address to the org, admins only. role defaults to member. The invited" +
         " address accepts by calling signup, which creates the account, its membership and its" +
         " first inbox.",
-      inputSchema: z.object({
-        org_id: orgId,
-        email: z.string(),
-        role: z.enum(["admin", "member"]).optional(),
-      }),
+      inputSchema: createInviteInput,
     },
     (args) => run(() => createInvite(env, principal, args.org_id, args)),
   );
@@ -729,7 +617,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
     {
       title: "List invites",
       description: "List the org's open invites, newest first. Admins only.",
-      inputSchema: z.object({ org_id: orgId }),
+      inputSchema: orgInput,
     },
     (args) => run(() => listInvites(env, principal, args.org_id)),
   );
@@ -739,7 +627,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
     {
       title: "Revoke invite",
       description: "Withdraw an open invite. Admins only.",
-      inputSchema: z.object({ org_id: orgId, invite_id: z.string().min(1) }),
+      inputSchema: inviteInput,
     },
     (args) => run(() => revokeInvite(env, principal, args.org_id, args.invite_id)),
   );
@@ -749,7 +637,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
     {
       title: "List members",
       description: "List the org's members with their role, email and inbox count.",
-      inputSchema: z.object({ org_id: orgId }),
+      inputSchema: orgInput,
     },
     (args) => run(() => listMembers(env, principal, args.org_id)),
   );
@@ -759,11 +647,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
     {
       title: "Update member",
       description: "Change a member's role, admins only. Demoting the last admin answers conflict.",
-      inputSchema: z.object({
-        org_id: orgId,
-        account_id: accountId,
-        role: z.enum(["admin", "member"]),
-      }),
+      inputSchema: updateMemberInput,
     },
     (args) => run(() => updateMember(env, principal, args.org_id, args.account_id, args)),
   );
@@ -775,7 +659,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
       description:
         "Remove a member from the org and revoke every API key on their account, admins only." +
         " Their inboxes and mail are left alone. Removing the last admin answers conflict.",
-      inputSchema: z.object({ org_id: orgId, account_id: accountId }),
+      inputSchema: memberInput,
     },
     (args) => run(() => removeMember(env, principal, args.org_id, args.account_id)),
   );
@@ -787,13 +671,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
       description:
         "Create an inbox owned by a member of the org, admins only. It counts against that" +
         " member's inbox quota and follows the same rules as create_inbox.",
-      inputSchema: z.object({
-        org_id: orgId,
-        account_id: accountId,
-        username: z.string().optional(),
-        domain: z.string().optional(),
-        display_name: z.string().optional(),
-      }),
+      inputSchema: provisionInboxInput,
     },
     (args) => run(() => provisionInbox(env, principal, args.org_id, args)),
   );
@@ -806,7 +684,7 @@ function registerOrgTools(server: McpServer, env: Env, principal: Principal): vo
         "Read the org's append-only audit log, newest first. Admins only. Covers org creation," +
         " invites, membership changes, inbox provisioning and deletion, and API key creation and" +
         " revocation.",
-      inputSchema: z.object({ org_id: orgId, ...pageArgs }),
+      inputSchema: listAuditInput,
     },
     (args) => run(() => listAudit(env, principal, args.org_id, args)),
   );

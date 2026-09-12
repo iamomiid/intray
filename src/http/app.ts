@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import skillMd from "../../public/skill.md";
 import { AppError } from "../lib/errors";
 import { routes } from "./routes/index";
+import { openapiRoutes } from "./routes/openapi";
 import type { AppEnv } from "./types";
 
 export const app = new Hono<AppEnv>();
@@ -15,6 +16,8 @@ const markdown = (body: string): Response =>
 
 app.get("/skill.md", () => markdown(skillMd));
 app.get("/llms.txt", () => markdown(skillMd));
+
+app.route("/", openapiRoutes);
 
 app.route("/v1", routes);
 

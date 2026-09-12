@@ -18,6 +18,8 @@ What is built, and what a contributor needs to know before touching it. Design r
 | outbound | done | recipient normalization, send/reply/forward builders, limit checks, send-error mapping |
 | core services | done | `serialize`, `principal`, `accounts`, `keys`, `inboxes`, `threads`, `messages`, `attachments`, `orgs`, `audit` |
 | http | done | `types.ts`, `auth.ts`, `body.ts`, one router per resource; every `/v1` endpoint in `docs/api.md` |
+| schemas | done | `src/schemas/`, one module per resource plus `objects.ts`; the MCP tools' `inputSchema` and the OpenAPI document both read from it, and `test/schemas.test.ts` parses a serialized row of each kind against its schema |
+| openapi | done | `GET /openapi.json`, built in `src/http/openapi.ts` from a route table and `z.toJSONSchema`, served by `src/http/routes/openapi.ts`; `test/openapi.test.ts` compares the document against `app.routes` in both directions |
 | mcp | done | `src/mcp/{server,tools,result}.ts`; 3 onboarding tools without a live key, 45 with one |
 | setup | done | `pnpm run login` then `pnpm run setup`; apex and subdomain modes, consent prompts, idempotent steps |
 | subaddressing | done | `splitTag` and `tagLabel` in `src/lib/address.ts`; inbound tags become labels, `from` on send/reply/forward may be subaddressed |
@@ -65,6 +67,12 @@ What is built, and what a contributor needs to know before touching it. Design r
 - The `messages_fts` triggers key on `message_id`, which no virtual table can index, so deleting a
   message scans the FTS content table. The alternative, keying on `messages.rowid`, is unsafe: with
   a TEXT primary key that rowid can be renumbered.
+- `/openapi.json` describes the REST surface only. The MCP tools validate with the same schemas but
+  are not in the document, because there is no MCP equivalent of an OpenAPI operation.
+- Response objects in `src/schemas/objects.ts` are strict, so the document carries
+  `additionalProperties: false` on them. That is what makes the drift test catch a field added to
+  `serialize.ts` alone, and it means a client generated from the document rejects a response
+  carrying a field its copy of the schema predates. Regenerate the client when the contract moves.
 
 ## Gotchas
 
@@ -101,6 +109,17 @@ What is built, and what a contributor needs to know before touching it. Design r
   stub the global `fetch` with `vi.stubGlobal` and undo it in `afterEach`. `test/webhooks.test.ts`
   does that; the queue handler itself is driven with `createMessageBatch` and `getQueueResult` from
   `cloudflare:test`.
+- `z.toJSONSchema` emits `$ref` between schemas only when it is handed a `z.registry` and a `uri`
+  callback; called on a schema directly it inlines every nested schema. `components.schemas` is
+  therefore one call over a registry of every named schema, and the path and query parameters are
+  separate per-object calls, which is safe because no parameter references a named schema.
+- `z.toJSONSchema` stamps `$schema` on what it returns, and `$id` as well on the registry form.
+  Both are stripped in `src/http/openapi.ts` before the result goes into the document, and
+  `test/openapi.test.ts` asserts neither survives.
+- A route table entry keyed on a zod schema is matched by object identity, so a schema reused in
+  two places must be the same binding. `signup_body` and the MCP `signup` input are the one const;
+  writing an equivalent `z.object({...})` in either place would inline it instead of `$ref`ing the
+  component.
 - `pnpm setup` runs pnpm's own built-in `setup` command, not the repo script. Invoke it as
   `pnpm run setup`.
 - `scripts/` has no `@types/node`; `scripts/node.d.ts` declares only the `node:*` shapes used.
