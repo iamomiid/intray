@@ -344,7 +344,7 @@ it("confirms an sns subscription by fetching its url once", async () => {
 
   const response = await postJson("/v1/inbound/bounces", {
     Type: "SubscriptionConfirmation",
-    SubscribeURL: "https://sns.example.com/confirm?token=abc",
+    SubscribeURL: "https://sns.eu-west-1.amazonaws.com/?Action=ConfirmSubscription&Token=abc",
   });
   expect(response.status).toBe(200);
   expect(await response.json<BounceResponse>()).toEqual({
@@ -353,7 +353,24 @@ it("confirms an sns subscription by fetching its url once", async () => {
     recorded: 0,
     confirmed: true,
   });
-  expect(fetched).toEqual(["https://sns.example.com/confirm?token=abc"]);
+  expect(fetched).toEqual([
+    "https://sns.eu-west-1.amazonaws.com/?Action=ConfirmSubscription&Token=abc",
+  ]);
+});
+
+it("refuses a subscription confirmation that points outside amazonaws.com", async () => {
+  const fetched: string[] = [];
+  vi.stubGlobal("fetch", (target: string) => {
+    fetched.push(String(target));
+    return Promise.resolve(new Response("ok"));
+  });
+
+  const response = await postJson("/v1/inbound/bounces", {
+    Type: "SubscriptionConfirmation",
+    SubscribeURL: "https://sns.example.com/confirm?token=abc",
+  });
+  expect(response.status).toBe(400);
+  expect(fetched).toEqual([]);
 });
 
 it("refuses a bounce feed call without the secret", async () => {

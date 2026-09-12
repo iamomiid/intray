@@ -105,9 +105,22 @@ export async function receiveInbound(env: Env, input: InboundInput): Promise<Inb
   }
 }
 
+function subscriptionUrl(raw: string): string {
+  const parsed = URL.parse(raw);
+  if (
+    parsed === null ||
+    parsed.protocol !== "https:" ||
+    !(parsed.hostname === "amazonaws.com" || parsed.hostname.endsWith(".amazonaws.com"))
+  ) {
+    throw badRequest("SubscribeURL must be an https amazonaws.com address");
+  }
+  return parsed.toString();
+}
+
 async function confirmSubscription(subscribeUrl: string): Promise<void> {
+  const confirmed = subscriptionUrl(subscribeUrl);
   try {
-    await fetch(subscribeUrl, { method: "GET" });
+    await fetch(confirmed, { method: "GET" });
   } catch (error) {
     console.error("could not confirm the notification subscription", error);
   }
