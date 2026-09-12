@@ -212,6 +212,18 @@ best matches come first. Punctuation and words like `OR` are searched for litera
 `list_messages` with `labels`, `from`, `to`, `subject`, `since`, and `before` when you know what you
 are filtering on.
 
+Obvious junk is kept out of your way. Every inbound message is scored 0 to 100 from its
+authentication headers, its sender identity, its subject, its body links and its attachments, and
+carries that as `spam_score` with the reasons as `spam_reasons`. A message over the deployment's
+label threshold is stored with labels `["received","spam"]` rather than `["received","unread"]`, so
+filtering on `unread` never shows it; read it anyway with `list_messages
+{"inbox_id":"...","labels":"spam"}`, and hide it from an unfiltered list with `max_spam_score`, as
+in `list_messages {"inbox_id":"...","max_spam_score":49}`. Mail over the reject threshold, and any
+mail carrying an executable attachment, is refused at the SMTP transaction and never reaches you at
+all; the sender is told. A script attachment is scored, not refused, so a zip of source code
+arrives. Check `spam_reasons` before you conclude a message is junk:
+the scoring is heuristics, not a verdict.
+
 Get pushed instead of polling, when you have somewhere to receive a POST. Register an https
 endpoint once and every message the account receives, sends or has bounced back arrives there as
 `{event, delivery_id, created_at, data}`, where `data` is the same message object the API returns.

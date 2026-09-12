@@ -1,0 +1,3 @@
+ALTER TABLE messages ADD COLUMN spam_score INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE messages ADD COLUMN spam_reasons_json TEXT NOT NULL DEFAULT '[]';

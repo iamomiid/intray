@@ -70,6 +70,8 @@ export interface MessageRow {
   size: number;
   has_attachments: number;
   raw_key: string | null;
+  spam_score: number;
+  spam_reasons_json: string;
   created_at: number;
 }
 

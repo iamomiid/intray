@@ -20,6 +20,10 @@ export const ATTACHMENT_TEXT_MAX_INPUT_BYTES = 10 * 1024 * 1024;
 
 export const ATTACHMENT_TEXT_MAX_BYTES = 256 * 1024;
 
+export const SPAM_MAX_SCORE = 100;
+
+export const SPAM_ARCHIVE_MAX_BYTES = 4 * 1024 * 1024;
+
 export const WEBHOOK_MAX_PER_ACCOUNT = 10;
 
 export const WEBHOOK_SECRET_BYTES = 32;

@@ -307,7 +307,10 @@ function registerMessageTools(server: McpServer, env: Env, principal: Principal)
     {
       title: "List messages",
       description:
-        "List an inbox's messages, newest first. labels matches messages carrying all of them; since and before bound created_at in Unix milliseconds.",
+        "List an inbox's messages, newest first. labels matches messages carrying all of them; " +
+        "since and before bound created_at in Unix milliseconds; max_spam_score bounds spam_score, " +
+        "which every message carries alongside spam_reasons. Mail scored spam is labelled spam and " +
+        "is not labelled unread.",
       inputSchema: listMessagesInput,
     },
     (args) => run(() => listMessages(env, principal, args.inbox_id, args)),

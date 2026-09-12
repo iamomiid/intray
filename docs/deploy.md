@@ -469,6 +469,11 @@ Edit `vars` in `wrangler.jsonc`:
 - `QUOTA_MESSAGES_RECEIVED_PER_MONTH` — per-account cap on messages received in a UTC month, as a
   string. `""` or `0` is unlimited.
 - `QUOTA_STORAGE_BYTES` — per-account cap on stored bytes, as a string. `""` or `0` is unlimited.
+- `SPAM_LABEL_THRESHOLD` — inbound spam score, 0 to 100, at or above which a message is stored
+  labelled `spam` rather than `unread`, as a string. Default `50`.
+- `SPAM_REJECT_THRESHOLD` — inbound spam score at or above which the message is refused with
+  `550 rejected as spam`, as a string. Default `90`; `0` never rejects. Executable attachments are
+  refused whatever this says.
 - `ROUTING_MODE` — `catch_all` or `per_inbox`. Leave it `catch_all` unless you are following
   **Per-inbox routing** above.
 - `CLOUDFLARE_ZONE_ID` and `WORKER_NAME` — only read in `per_inbox` mode; the zone the rules are

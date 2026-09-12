@@ -60,6 +60,8 @@ function seedInput(seed: MessageSeed): InsertMessageInput {
     size: 100,
     hasAttachments: 0,
     rawKey: `raw/${seed.messageId}.eml`,
+    spamScore: 0,
+    spamReasonsJson: "[]",
     createdAt: seed.createdAt,
   };
 }

@@ -55,6 +55,8 @@ key lookup.
 | `QUOTA_MESSAGES_SENT_PER_MONTH` | per-account cap on messages sent in a UTC month, as a string. Empty, absent or `0` is unlimited |
 | `QUOTA_MESSAGES_RECEIVED_PER_MONTH` | per-account cap on messages received in a UTC month, as a string. Empty, absent or `0` is unlimited |
 | `QUOTA_STORAGE_BYTES` | per-account cap on stored bytes, as a string. Empty, absent or `0` is unlimited |
+| `SPAM_LABEL_THRESHOLD` | inbound `spam_score` at or above which a message is stored labelled `spam` rather than `unread`, as a string. Default `50` |
+| `SPAM_REJECT_THRESHOLD` | inbound `spam_score` at or above which a message is refused with `550 rejected as spam`, as a string. Default `90`; `0` never rejects |
 | `ROUTING_MODE` | `catch_all`, the default, or `per_inbox`. In `per_inbox` every inbox gets its own Email Routing rule and the zone catch-all is off, so the domain accepts mail only for addresses that exist |
 | `CLOUDFLARE_ZONE_ID` | the zone the routing rules are written to. Only read in `per_inbox` mode |
 | `WORKER_NAME` | the script name a routing rule's worker action targets. Default `intray` |
@@ -90,6 +92,14 @@ secret is wrong or disabled, when a member calls an admin-only org endpoint, and
 to an inbox calls an account-level endpoint. `quota_exceeded` is returned when a send, reply, forward or draft
 send would pass `QUOTA_MESSAGES_SENT_PER_MONTH`; inbound mail past a quota is refused at the SMTP
 transaction with `552 quota exceeded` and never becomes an API error.
+
+Two more inbound refusals happen at the SMTP transaction and never become API errors either. Mail
+scoring at or above `SPAM_REJECT_THRESHOLD` is refused with `550 rejected as spam`, and mail
+carrying an executable attachment — `exe`, `com`, `scr`, `pif`, `bat`, `cmd`, `msi`, `hta`, `lnk`,
+`vbs`, `ps1`, `jar`, loose or inside a zip — with `550 attachment type not accepted`, whatever its
+score. Script attachments — `js`, `jse`, `wsf`, `sh`, `py`, `rb`, `pl` — and macro-enabled Office
+documents are accepted and scored `attachment_script` or `attachment_macro_office`, loose or inside
+a zip; every other attachment type is accepted untouched.
 
 `routing_unavailable` is returned in `per_inbox` mode when `CLOUDFLARE_ZONE_ID` or
 `ROUTING_API_TOKEN` is missing, or when Cloudflare refuses the rule call, on inbox create and inbox
@@ -188,7 +198,13 @@ individually it also carries `messages`, an array of message objects ordered by 
 `message_id`, `inbox_id`, `thread_id`, `direction` (`inbound` or `outbound`), `rfc_message_id`,
 `in_reply_to`, `references`, `from` (`{address, name}`), `to`, `cc`, `bcc` (arrays of the same
 shape), `reply_to`, `subject`, `text`, `html`, `preview`, `labels`, `size`, `has_attachments`,
-`attachments`, `created_at`.
+`spam_score`, `spam_reasons`, `attachments`, `created_at`.
+
+`spam_score` is 0 to 100 and `spam_reasons` is the list of short tokens that made it up, both set
+on ingest and never recomputed; an outbound message is always `0` and `[]`. The tokens are listed
+with their weights in `docs/architecture.md`. Inbound mail at or above `SPAM_LABEL_THRESHOLD` is
+stored with labels `["received","spam"]` instead of `["received","unread"]`, so a filter on
+`unread` does not surface it and a filter on `spam` finds it.
 
 ### attachment
 
@@ -377,7 +393,7 @@ change, not a separate endpoint:
 
 | Method | Path | Query | Returns |
 | --- | --- | --- | --- |
-| GET | `/inboxes/:inbox_id/messages` | `labels`, `from`, `to`, `subject`, `since`, `before`, `limit`, `page_token` | `{items, next_page_token}` |
+| GET | `/inboxes/:inbox_id/messages` | `labels`, `from`, `to`, `subject`, `since`, `before`, `max_spam_score`, `limit`, `page_token` | `{items, next_page_token}` |
 | GET | `/inboxes/:inbox_id/messages/search` | `q`, `limit`, `page_token` | `{items, next_page_token}` |
 | GET | `/inboxes/:inbox_id/messages/wait` | `since`, `timeout` | `{items, next_page_token}` |
 | GET | `/inboxes/:inbox_id/messages/:message_id` | — | message |
@@ -388,7 +404,9 @@ change, not a separate endpoint:
 | POST | `/inboxes/:inbox_id/messages/delete` | body `{message_ids}` | `{deleted: <count>}` |
 
 `labels` is a comma-separated list and matches messages carrying all of them. `since` and `before`
-are Unix milliseconds and bound `created_at`. Messages are ordered by `created_at` descending,
+are Unix milliseconds and bound `created_at`. `max_spam_score` is an upper bound on `spam_score`,
+so `max_spam_score=49` hides everything labelled `spam` at the default threshold; a value that is
+not a number is 400 `bad_request`. Messages are ordered by `created_at` descending,
 except `wait`, which returns ascending.
 
 `search` is a full-text query over `subject`, the text body, the sender address and the sender
@@ -408,7 +426,8 @@ A deployment whose Worker has no such binding falls back to polling every 2 seco
 nothing about the response. Only arriving mail wakes a wait; a message the caller sends itself does
 not.
 
-Inbound messages are stored with labels `["received","unread"]`, outbound with `["sent"]`. A label
+Inbound messages are stored with labels `["received","unread"]`, or `["received","spam"]` when the
+message scored at or above `SPAM_LABEL_THRESHOLD`, and outbound with `["sent"]`. A label
 is at most 64 characters and a message carries at most 20 of them, on `PATCH` and on the batch
 endpoints alike.
 
@@ -798,7 +817,7 @@ verify, and then store the key as an `Authorization` header on this endpoint.
 | `get_thread` | `inbox_id`, `thread_id` |
 | `update_thread_labels` | `inbox_id`, `thread_id`, `add?`, `remove?` |
 | `delete_thread` | `inbox_id`, `thread_id` |
-| `list_messages` | `inbox_id`, `labels?`, `from?`, `to?`, `subject?`, `since?`, `before?`, `limit?`, `page_token?` |
+| `list_messages` | `inbox_id`, `labels?`, `from?`, `to?`, `subject?`, `since?`, `before?`, `max_spam_score?`, `limit?`, `page_token?` |
 | `search_messages` | `inbox_id`, `q`, `limit?`, `page_token?` |
 | `get_message` | `inbox_id`, `message_id` |
 | `wait_for_message` | `inbox_id`, `since?`, `timeout?` |

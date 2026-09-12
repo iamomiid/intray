@@ -120,6 +120,8 @@ it("parses a serialized thread, message and attachment against their schemas", a
     await getMessage(env, principal, INBOX_ID, delivered.messageId),
   );
   expect(message.attachments.length).toBeGreaterThan(0);
+  expect(message.spam_score).toBe(6);
+  expect(message.spam_reasons).toEqual(["html_only"]);
 
   const rows = await listAttachments(env.DB, delivered.messageId);
   expect(rows.length).toBeGreaterThan(0);

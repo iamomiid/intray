@@ -194,6 +194,8 @@ it("deletes the inbox, its rows, and its R2 objects", async () => {
     size: 5,
     hasAttachments: 1,
     rawKey,
+    spamScore: 0,
+    spamReasonsJson: "[]",
     createdAt: now(),
   });
   await insertAttachment(env.DB, {

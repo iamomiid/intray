@@ -16,6 +16,7 @@ export const listMessagesQuery = z.object({
   subject: z.string().optional(),
   since: z.number().optional(),
   before: z.number().optional(),
+  max_spam_score: z.number().optional(),
   ...pageArgs,
 });
 
