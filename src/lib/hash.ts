@@ -32,12 +32,10 @@ export async function generateApiKey(): Promise<GeneratedApiKey> {
 }
 
 export function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  if (left.byteLength !== right.byteLength) {
     return false;
   }
-  const difference = Array.from(
-    { length: a.length },
-    (_, index) => a.charCodeAt(index) ^ b.charCodeAt(index),
-  ).reduce((accumulator, value) => accumulator | value, 0);
-  return difference === 0;
+  return crypto.subtle.timingSafeEqual(left, right);
 }
